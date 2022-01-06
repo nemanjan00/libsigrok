@@ -754,7 +754,7 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 		trigger_point = DSLOGIC_ATOMIC_SAMPLES;
 	const uint64_t mem_depth_per_channel = devc->profile->mem_depth /
 		num_enabled_channels;
-	const uint64_t max_trigger_point = devc->continuous_mode ?
+	const uint64_t max_trigger_point = !devc->buffered_mode ?
 		((mem_depth_per_channel * 10) / 100) :
 		((mem_depth_per_channel * DS_MAX_TRIG_PERCENT) / 100);
 	if (trigger_point > max_trigger_point)
@@ -910,7 +910,7 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 	else if (devc->cur_samplerate == devc->profile->quarter_samplerate)
 		mode |= DS_MODE_QUAR_MODE;
 
-	if (devc->continuous_mode)
+	if (!devc->buffered_mode)
 		mode |= DS_MODE_STREAM_MODE;
 	if (devc->external_clock) {
 		mode |= DS_MODE_CLK_TYPE;
@@ -919,8 +919,9 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 	}
 	if (devc->limit_samples > DS_MAX_LOGIC_DEPTH *
 		ceil(devc->cur_samplerate * 1.0 / devc->profile->max_samplerate)
-		&& !devc->continuous_mode) {
+		&& devc->buffered_mode) {
 		/* Enable RLE for long captures.
+		 * This only works with buffered mode.
 		 * Without this, captured data present errors.
 		 */
 		mode |= DS_MODE_RLE_MODE;
@@ -1120,7 +1121,7 @@ SR_PRIV struct dev_context *dslogic_dev_new(void)
 	devc->cur_samplerate = 0;
 	devc->limit_samples = 0;
 	devc->capture_ratio = 0;
-	devc->continuous_mode = FALSE;
+	devc->buffered_mode = FALSE;
 	devc->clock_edge = DS_EDGE_RISING;
 
 	return devc;
@@ -1276,7 +1277,7 @@ static void * session_worker_thread(void *data) {
 		devc->data_proc_state = DS_DATA_PROC_RUNNING;
 		g_mutex_unlock(&devc->data_proc_mutex);
 		limit_samples = devc->limit_samples;
-		if (!devc->continuous_mode)
+		if (devc->buffered_mode)
 				limit_samples = devc->samples_captured;
 
 		cur_sample_count = DSLOGIC_ATOMIC_SAMPLES * devc->completed_transfer->actual_length /
@@ -1446,7 +1447,7 @@ static size_t to_bytes_per_ms(const struct sr_dev_inst *sdi)
 	const struct dev_context *const devc = sdi->priv;
 	const size_t ch_count = enabled_channel_count(sdi);
 
-	if (devc->continuous_mode)
+	if (!devc->buffered_mode)
 		return (devc->cur_samplerate * ch_count) / (1000 * 8);
 
 

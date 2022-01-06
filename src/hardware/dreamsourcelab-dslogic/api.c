@@ -76,6 +76,7 @@ static const uint32_t devopts[] = {
 	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_EXTERNAL_CLOCK | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_CLOCK_EDGE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_DATALOG | SR_CONF_GET | SR_CONF_SET
 };
 
 static const int32_t trigger_matches[] = {
@@ -477,8 +478,8 @@ static int config_get(uint32_t key, GVariant **data,
 	case SR_CONF_EXTERNAL_CLOCK:
 		*data = g_variant_new_boolean(devc->external_clock);
 		break;
-	case SR_CONF_CONTINUOUS:
-		*data = g_variant_new_boolean(devc->continuous_mode);
+	case SR_CONF_DATALOG:
+		*data = g_variant_new_boolean(devc->buffered_mode);
 		break;
 	case SR_CONF_CLOCK_EDGE:
 		idx = devc->clock_edge;
@@ -533,8 +534,8 @@ static int config_set(uint32_t key, GVariant *data,
 	case SR_CONF_EXTERNAL_CLOCK:
 		devc->external_clock = g_variant_get_boolean(data);
 		break;
-	case SR_CONF_CONTINUOUS:
-		devc->continuous_mode = g_variant_get_boolean(data);
+	case SR_CONF_DATALOG:
+		devc->buffered_mode = g_variant_get_boolean(data);
 		break;
 	case SR_CONF_CLOCK_EDGE:
 		if ((idx = std_str_idx(data, ARRAY_AND_SIZE(signal_edges))) < 0)
