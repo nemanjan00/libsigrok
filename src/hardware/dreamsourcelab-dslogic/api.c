@@ -400,8 +400,10 @@ static int dev_open(struct sr_dev_inst *sdi)
 		return ret;
 
 	if (devc->cur_samplerate == 0) {
-		/* Samplerate hasn't been set; default to the slowest one. */
-		devc->cur_samplerate = devc->samplerates[0];
+		devc->cur_samplerate = SR_MHZ(100);
+	}
+	if (devc->limit_samples == 0) {
+		devc->limit_samples = 100000000ULL;
 	}
 
 	if (devc->cur_threshold == 0.0) {
@@ -515,6 +517,9 @@ static int config_set(uint32_t key, GVariant *data,
 		devc->cur_samplerate = devc->samplerates[idx];
 		break;
 	case SR_CONF_LIMIT_SAMPLES:
+		/* FPGA supports max. 2^32 << 4 samples */
+		if (g_variant_get_uint64(data) > ((uint64_t)UINT_MAX << 4))
+			return SR_ERR_ARG;
 		devc->limit_samples = g_variant_get_uint64(data);
 		break;
 	case SR_CONF_CAPTURE_RATIO:
