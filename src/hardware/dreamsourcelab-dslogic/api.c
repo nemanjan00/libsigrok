@@ -150,6 +150,15 @@ static gboolean is_plausible(const struct libusb_device_descriptor *des)
 	return FALSE;
 }
 
+static enum dslogic_api_version get_api_version(libusb_device *usbdev)
+{
+	if (usb_match_manuf_prod(usbdev, "DreamSourceLab", "USB-based Instrument"))
+		return DS_API_V1;
+	if (usb_match_manuf_prod(usbdev, "DreamSourceLab", "USB-based DSL Instrument v2"))
+		return DS_API_V2;
+	return DS_API_V_UNKNOWN;
+}
+
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct drv_context *drvc;
@@ -160,8 +169,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	struct sr_channel_group *cg;
 	struct sr_config *src;
 	const struct dslogic_profile *prof;
+	enum dslogic_api_version api_version;
 	GSList *l, *devices, *conn_devices;
-	gboolean has_firmware;
 	struct libusb_device_descriptor des;
 	libusb_device **devlist;
 	struct libusb_device_handle *hdl;
@@ -295,12 +304,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			devc->num_samplerates = ARRAY_SIZE(samplerates);
 
 		}
-		if (devc->profile->api_version == DS_API_V1)
-			has_firmware = usb_match_manuf_prod(devlist[i], "DreamSourceLab", "USB-based Instrument");
-		else
-			has_firmware = usb_match_manuf_prod(devlist[i], "DreamSourceLab", "USB-based DSL Instrument v2");
+		api_version = dslogic_detect_api_version(devlist[i]);
 
-		if (has_firmware) {
+		if (api_version != DS_API_V_UNKNOWN) {
 			/* Already has the firmware, so fix the new address. */
 			sr_dbg("Found a DSLogic device.");
 			sdi->status = SR_ST_INACTIVE;
