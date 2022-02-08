@@ -27,33 +27,33 @@ static const struct dslogic_profile supported_device[] = {
 	{ 0x2a0e, 0x0001, "DreamSourceLab", "DSLogic", NULL,
 		"dreamsourcelab-dslogic-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024 * 1024, 100,
-		512, DS_API_V1, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
 	/* DreamSourceLab DSCope */
 	{ 0x2a0e, 0x0002, "DreamSourceLab", "DSCope", NULL,
 		"dreamsourcelab-dscope-fx2.fw",
 		0, "DreamSourceLab", "DSCope", 256 * 1024 * 1024, 100,
-		512, DS_API_V1, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
 	/* DreamSourceLab DSLogic Pro */
 	{ 0x2a0e, 0x0003, "DreamSourceLab", "DSLogic Pro", NULL,
 		"dreamsourcelab-dslogic-pro-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024 * 1024, 100,
-		512, DS_API_V1, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
 	/* DreamSourceLab DSLogic Plus */
 	{ 0x2a0e, 0x0020, "DreamSourceLab", "DSLogic Plus", NULL,
 		"dreamsourcelab-dslogic-plus-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024 * 1024, 100,
-		512, DS_API_V1, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
 	/* DreamSourceLab DSLogic Basic */
 	{ 0x2a0e, 0x0021, "DreamSourceLab", "DSLogic Basic", NULL,
 		"dreamsourcelab-dslogic-basic-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024, 100,
-		512, DS_API_V1, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
 	/* DreamSourceLab DSLogic U3Pro16 */
 	{ 0x2a0e, 0x002a, "DreamSourceLab", "DSLogic U3Pro16", NULL,
 		"dreamsourcelab-dslogic-basic-fx2.fw",
 		DSLOGIC_CAPS_ADF4360, "DreamSourceLab", "DSLogic", 
 		2ULL * 1024ULL * 1024ULL * 1024ULL, 40,
-		1024, DS_API_V2, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5},
+		1024, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5},
 
 	ALL_ZERO
 };
@@ -149,15 +149,6 @@ static gboolean is_plausible(const struct libusb_device_descriptor *des)
 	}
 
 	return FALSE;
-}
-
-static enum dslogic_api_version get_api_version(libusb_device *usbdev)
-{
-	if (usb_match_manuf_prod(usbdev, "DreamSourceLab", "USB-based Instrument"))
-		return DS_API_V1;
-	if (usb_match_manuf_prod(usbdev, "DreamSourceLab", "USB-based DSL Instrument v2"))
-		return DS_API_V2;
-	return DS_API_V_UNKNOWN;
 }
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
@@ -309,7 +300,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 		if (api_version != DS_API_V_UNKNOWN) {
 			/* Already has the firmware, so fix the new address. */
-			sr_dbg("Found a DSLogic device.");
+			sr_dbg("Found a DSLogic device with API version %d", api_version);
 			sdi->status = SR_ST_INACTIVE;
 			sdi->inst_type = SR_INST_USB;
 			sdi->conn = sr_usb_dev_inst_new(libusb_get_bus_number(devlist[i]),
@@ -416,7 +407,6 @@ static int dev_open(struct sr_dev_inst *sdi)
 		devc->cur_threshold = thresholds[1][0];
 		ret = dslogic_set_voltage_threshold(sdi, devc->cur_threshold);
 	}
-	devc->continuous_mode = TRUE;
 
 	return ret;
 }

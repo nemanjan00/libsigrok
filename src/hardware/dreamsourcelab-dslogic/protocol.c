@@ -1114,9 +1114,9 @@ SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di)
 		}
 
 		sr_info("Opened device on %d.%d (logical) / %s (physical), "
-			"interface %d, firmware %d.%d.",
+			"interface %d, firmware %d.%d, API version %d.",
 			usb->bus, usb->address, connection_id,
-			USB_INTERFACE, vi.major, vi.minor);
+			USB_INTERFACE, vi.major, vi.minor, devc->api_version);
 
 		sr_info("Detected REVID=%d, it's a Cypress CY7C68013%s.",
 			revid, (revid != 1) ? " (FX2)" : "A (FX2LP)");

@@ -76,8 +76,8 @@ enum dslogic_edge_modes {
 };
 
 enum dslogic_api_version {
-	DS_API_V1,
-	DS_API_V2,
+	DS_API_V1 = 1,
+	DS_API_V2 = 2,
 	DS_API_V_UNKNOWN = 0xff
 };
 
