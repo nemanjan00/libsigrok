@@ -115,22 +115,37 @@ Key facts:
   no watchdog). The driver therefore reseeds after any failed transaction.
   **Never send guessed commands to real hardware**: replay what Logic 2
   sends, or work out the command from the firmware first.
-- **The capture register block** is copied exactly from Logic 2. Don't write
-  `0x07`/`0x09` on the Pro 8, and do write `0x1a`/`0x1b`; otherwise the stream
-  runs at 1/8 of the rate.
-  - Digital divider: `500 MHz / (5·n)`, or 500 MHz with `n = 0`.
-  - USB throttle (`0x14`): `min(255, 100e6 / (rate·nch/32))`.
+- **Capture registers** are written exactly the way Logic 2 writes them.
+  Digital rate: 8-bit divider `0x0b` (500 MHz / (5·n)), or `0x1a` = power-of-two
+  decimation for 500/250/125 MS/s. `0x1a` must always be written (its
+  default divides by 8). USB throttle (`0x14`):
+  `ceil(100e6 / (bits_per_s / 32))`.
+- **Analog (A0–A7)** shares the samplerate with digital, at the calibrated
+  rates (50 MHz / 1, 4, 8, 16, 32, 64). The stream frames are digital words,
+  then 3-word groups of 8 × 12-bit two's complement samples per channel.
+  Volts and frequency-response filters come from Logic 2's per-device
+  calibration file (`~/.config/Logic/calibrations/<id>-*.cal`), or a copy
+  named `saleae-logic-pro-<id>.cal` in a firmware dir; without one, nominal
+  ±10.5 V and no filtering.
 - **Status register `0x40`:** `0x20` means OK; bit 7 is set in normal
-  operation (`0xa0`); bit 0 means overrun. The stream sustains 1 Gbit/s;
-  2 Gbit/s overruns.
+  operation (`0xa0`); bit 0 means overrun. The stream sustains 1 Gbit/s; the
+  device FIFO overruns within ~0.1 s if no reads are queued, so the driver
+  resubmits before converting and queues ~0.4 s of transfers.
 - **There's no hardware trigger.** Saleae triggers in software; the driver
-  uses `soft_trigger_logic`.
+  uses `soft_trigger_logic` (no pre-trigger data when analog is enabled).
 - **The data endpoint can stay halted** after a killed session. The driver
   clears the halt on EP1/EP2 at open and at acquisition start.
+- **sigrok-cli output caveats with analog:** the `csv` output module
+  overflows its heap when analog packet sizes vary (an upstream bug, with
+  any driver that doesn't enable every channel), and `-O binary` sends
+  analog through the slow text formatter. Use `-o file.sr` or a
+  libsigrok consumer.
 
-Verified on hardware: 10 kHz – 100 MHz on 8 channels, 500 MHz on 1–2
-channels, sample/time limits, continuous mode, triggers with capture ratio,
-a blind UART test decoded byte-exact, and recovery after a killed session.
+Verified on hardware: every digital rate 1–500 MS/s (125 and 250 MS/s
+included), analog up to 50 MS/s, mixed 8 digital + 4 analog at 12.5 MS/s,
+all 8 analog at 6.25 MS/s, a UART decoded byte-exact from both digital and
+analog channels, voltages matching Logic 2 within 10 mV, triggers, and
+recovery after a killed session.
 The Logic Pro 16 path (legacy firmware) is untested.
 
 ## Testing gotchas (lab PC)
