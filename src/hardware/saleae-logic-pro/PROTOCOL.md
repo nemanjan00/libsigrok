@@ -160,26 +160,87 @@ decode to garbage and trips this fault. Never send a reseed with a guessed forma
   Standard requests only do endpoint halt handling.
 - So once the firmware faults, nothing over USB can recover it; it needs a real power cycle.
 
-## Capture configuration ✅ (static RE of Logic 1.x `Logic2FpgaDevice::SetCaptureParameters`)
+## Capture configuration ✅
 
-FPGA registers written with cmd 0x80 before cmd 0x01 (start capture):
+FPGA registers are written with one cmd `0x80` before cmd `0x01` (start
+capture), then read back. The meanings come from static RE of Logic 1.x
+(`Logic2FpgaDevice::SetCaptureParameters`, `DeviceCalculateMixRate`) and are
+confirmed against usbmon traces of Logic 2 on the Lattice bitstream:
 
 | reg | meaning |
 |---|---|
-| `0x06/0x07` | digital channel mask (0x07 only on 16-channel devices) |
-| `0x08/0x09` | analog channel mask |
-| `0x0a` | analog rate divider − 1 |
-| `0x0b/0x0c` | digital divider: `n = 500 MHz / rate`; reg = `n/5` (n must be a multiple of 5), or `0` for 500 MS/s |
-| `0x0d/0x0e` | analog / digital mux (from `DeviceCalculateMixRate`; for digital-only = number of enabled channels) |
-| `0x12` | IO voltage option, `1 << option_index` |
+| `0x00` | control: `0x01` = run, `0x00` = stop |
+| `0x06` | digital channel mask (`0x07`: high byte, 16-channel devices only) |
+| `0x08` | analog channel mask (`0x09`: high byte, 16-channel devices only) |
+| `0x0a` | analog divider `d = 50 MHz / analog rate`; reg = `d`, or `d − 1` for `d < 4` |
+| `0x0b` | digital divider: rate = 500 MHz / (5·n), **8-bit n** (Lattice bitstream); `0` with `0x1a` below |
+| `0x0c` | unused on the Lattice bitstream (16-bit divider high byte on the legacy Xilinx one) |
+| `0x1a` | with `0x0b = 0`: power-of-two decimation of 500 MHz (`0` = 500, `1` = 250, `2` = 125 MS/s). **It must be written**: left at its default, the stream ran at 1/8 of the rate |
+| `0x1b` | `0` |
+| `0x0d` | analog words per stream frame (see below) |
+| `0x0e` | digital words per stream frame |
+| `0x12` | digital IO threshold option, `1 << index` (Logic 2 writes `0x04` for 3.3 V, `0x01` by default) |
 | `0x13` | `0` |
-| `0x14` | USB throttle `min(255, 100e6 / (rate·n_channels / 32))` |
+| `0x14` | USB throttle `min(255, ceil(100e6 / (bits_per_s / 32)))`, with `bits_per_s = rate · (n_dig + 12 · n_ana)` |
 
-Logic 1.x reads the block back and asserts on any mismatch
-("Capture parameter failed to download to device").
+Logic 2's digital rates for the Pro 8: 500, 250, 125, 100, 50, 25, 20, 12.5,
+10, 6.25, 5, 4, 2.5, 2, 1 MS/s. Nothing below ~392 kHz is possible (n ≤ 255).
 
-The old libsigrok driver's hard-coded values for 1/2/2.5/10/25/50 MHz match
-this formula exactly. Its fixed throttle only fits a single enabled channel.
+Examples from Logic 2 traces (`reg=val`, in write order):
+
+```
+10 MS/s D0-7:            00=00 08=00 06=ff 0a=00 1b=00 0b=0a 0c=00 1a=00 0d=00 0e=08 12=04 13=00 14=28
+250 MS/s D2:             00=00 08=00 06=04 0a=00 1b=00 0b=00 0c=00 1a=01 0d=00 0e=01 12=01 13=00 14=0d
+125 MS/s D2:             ...                           0b=00       1a=02 ...                        14=1a
+D2 6.25M + A2 1.5625M:   00=00 08=04 06=04 0a=20 1b=00 0b=10 0c=00 1a=00 0d=03 0e=01 12=04 13=00 14=80
+A2 50 MS/s:              00=00 08=04 06=00 0a=00 1b=00 0b=00 0c=00 1a=00 0d=03 0e=00 12=01 13=00 14=06
+```
+
+## Sample stream (EP2) ✅
+
+The stream is a sequence of frames of 32-bit little-endian words:
+
+```
+[ 0x0e digital words ] [ 0x0d analog words ]
+```
+
+- **Digital word:** 32 consecutive samples of one channel, earliest sample
+  in bit 31. One word per enabled channel, in ascending channel order.
+- **Analog group:** 3 words = 96 bits = 8 consecutive samples of one channel.
+  Each sample is **12-bit two's complement**, sample 0 in bits 0–11 of the
+  96-bit little-endian value (`w0 | w1 << 32 | w2 << 64`). Groups rotate over
+  the enabled analog channels in ascending order, so a frame holds
+  `rounds × n_ana` groups.
+- **Mux values** (vendor `DeviceCalculateMixRate`, 32-bit words, 12-bit ADC):
+  `dw = dig_rate / 32`, `ag = ana_rate / 8`, `g = gcd(dw, ag)`;
+  `0x0e = n_dig · dw/g`, `0x0d = 3 · n_ana · ag/g`. Digital only:
+  `0x0d = 0`, `0x0e = n_dig`. Analog only: `0x0e = 0`, `0x0d = 3 · n_ana`.
+  With equal rates (what the sigrok driver uses): `0x0e = n_dig`,
+  `0x0d = 12 · n_ana`, so a frame is 32 sample periods.
+
+## Analog calibration ✅
+
+The analog sample rate is 50 MHz / d. Logic 2 calibrates 50, 12.5, 6.25, 3.125,
+1.5625 MS/s and 781.25 kS/s, which are also valid digital rates. It keeps a
+per-device JSON calibration file at
+`~/.config/Logic/calibrations/<device id decimal>-<timestamp>-<n>.cal`. The
+device ID is the 8-byte EEPROM serial (cmd `0x07`, addr `0x08`) read
+little-endian, e.g. `0x707dc167abeb989e` = `8105847555346897054`.
+
+- **`fullScaleVoltageRanges[ch]`** gives `{minimumVoltage, maximumVoltage}`:
+  the volts at codes −2048 and +2047. Conversion is linear:
+  `V = vmin + (code + 2048) · (vmax − vmin) / 4095`. The ranges are about
+  ±10.5 V, different per channel.
+- **`calibrationSets[rate][ch]`** gives `df1SosCoefficients`: 5 cascaded
+  biquads (`b0 b1 b2 a1 a2`, direct form I) with unity DC gain that flatten
+  the front-end frequency response, plus `groupDelay` in samples (5, or 3 at
+  50 MS/s, the same on all channels). Logic 2 aligns analog with digital by
+  this delay.
+- `hittiteAdcGainRegisterValue` is 0 on this unit. The ADC is a Hittite
+  part, configured via FPGA regs `0x03`/`0x04`/`0x05` (index, value lo, hi).
+
+Checked on hardware: a 3.3 V UART line reads 3.289 / 0.012 V (high/low) in
+sigrok, against 3.280 / 0.008 V in Logic 2.
 
 ## Triggers ✅
 
@@ -190,26 +251,28 @@ trigger (`soft_trigger_logic_*`) with `captureratio` for pre-trigger data.
 
 ## Capture sequence (Logic 2, Logic Pro 8 / Lattice bitstream) ✅
 
-From a usbmon trace of a Logic 2 capture (10 MS/s, D0–D7), replayed by the
-sigrok driver and verified on hardware:
+From usbmon traces of Logic 2 captures, replayed by the sigrok driver and
+verified on hardware:
 
 ```
-W 15=03 ; ADC[0f]=0000 ; R 40 ; R 4a ; R 40
-W 00=00 08=00 06=<dmask> 0a=00 1b=00 0b=<div lo> 0c=<div hi> 1a=00
-  0d=00 0e=<n_dig> 12=04 13=00 14=<throttle>      (one cmd 0x80, then read back)
+W 15=03 ; ADC[0f]=0000 ; R 40 ; R 4a ; R 40        (ADC power up)
+W <register block above> ; R <same regs>           (one cmd 0x80, then read back)
 cmd 0x01 -> 07 00
 W 00=01                                            (run; stream on EP2)
 ...
-W 00=00 ; cmd 0x02 -> 07 00 ; R 40
+W 00=00 ; cmd 0x02 -> 07 00 ; R 40 ; R 4a
+W 15=00 ; ADC[0f]=0100                             (ADC power down)
 ```
 
-- **Don't write `0x07`/`0x09`** (the 16-channel mask MSBs) on the Pro 8. Writing
-  them and not writing `0x1a`/`0x1b` makes the stream run at 1/8 of the rate.
 - **Status reg `0x40`:** `0x20` = idle/ok. Bit 7 is set during normal operation
   (`0xa0`). **Bit 0 = sample buffer overrun** (`0xa1`). It stays set until the
   next reset.
-- **USB throughput:** 1 Gbit/s sustained (500 MS/s × 2 ch, 100 MS/s × 8 ch).
-  2 Gbit/s (500 MS/s × 4 ch) overruns after ~30M samples.
+- **USB throughput:** 1 Gbit/s sustained, e.g. 500 MS/s × 2 ch, 125 MS/s × 8
+  ch, or 50 MS/s analog (600 Mbit/s); 2 Gbit/s overruns. Logic 2 uses about
+  1.6 MB bulk transfers. The device FIFO is small: if the host stops queueing
+  reads for even ~0.1 s at 75 MB/s, it overruns and stops. Keep enough
+  transfers queued (the driver queues ~0.4 s, with ~10 ms per transfer) and
+  resubmit before converting.
 - **Crypto handshake at capture start:** Logic 2 does a nonce + sign
   over cmd 0x8c, but it doesn't change the command-channel LFSR, and capture
   works without it.
