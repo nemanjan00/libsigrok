@@ -23,9 +23,10 @@
  *
  * Brymen BM52x serial protocol parser. The USB protocol (for the cable)
  * and the packet description (for the meter) were retrieved from:
- * http://brymen.com/product-html/Download2.html
- * http://brymen.com/product-html/PD02BM520s_protocolDL.html
- * http://brymen.com/product-html/images/DownloadList/ProtocolList/BM520-BM520s_List/BM520-BM520s-10000-count-professional-dual-display-mobile-logging-DMMs-protocol.zip
+ * http://www.brymen.com/Download2.html
+ * http://www.brymen.com/PD02BM520s_protocolDL.html
+ * http://www.brymen.com/images/DownloadList/ProtocolList/BM520-BM520s_List/BM520-BM520s-10000-count-professional-dual-display-mobile-logging-DMMs-protocol.zip
+ * http://web.archive.org/web/20180119175327/http://brymen.com/product-html/images/DownloadList/ProtocolList/BM520-BM520s_List/BM520-BM520s-10000-count-professional-dual-display-mobile-logging-DMMs-protocol.zip
  *
  * This parser was initially created for BM520s devices and tested with
  * BM525s. The Brymen BM820s family of devices uses the same protocol,
@@ -1362,7 +1363,7 @@ SR_PRIV int brymen_bm52x_config_get(void *st, uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct brymen_bm52x_state *state;
-	char text[20];
+	char text[32];
 
 	state = st;
 

@@ -19,6 +19,9 @@
  */
 
 #include <config.h>
+
+#include <ctype.h>
+
 #include "protocol.h"
 
 static const uint32_t scanopts[] = {
@@ -46,54 +49,178 @@ static const uint32_t devopts[] = {
 	SR_CONF_OVER_VOLTAGE_PROTECTION_ENABLED | SR_CONF_GET | SR_CONF_SET,
 };
 
+/* Voltage and current ranges. Values are: Min, max, step. */
+static const double volts_30[] = { 0, 31, 0.01, };
+static const double volts_60[] = { 0, 61, 0.01, };
+static const double amps_3[] = { 0, 3.1, 0.001, };
+static const double amps_5[] = { 0, 5.1, 0.001, };
+
 static const struct korad_kaxxxxp_model models[] = {
-	/* Device enum, vendor, model, ID reply, channels, voltage, current */
-	{VELLEMAN_PS3005D, "Velleman", "PS3005D",
-		"VELLEMANPS3005DV2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{VELLEMAN_LABPS3005D, "Velleman", "LABPS3005D",
-		"VELLEMANLABPS3005DV2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KA3005P, "Korad", "KA3005P",
-		"KORADKA3005PV2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	/* Sometimes the KA3005P has an extra 0x01 after the ID. */
-	{KORAD_KA3005P_0X01, "Korad", "KA3005P",
-		"KORADKA3005PV2.0\x01", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	/* Sometimes the KA3005P has an extra 0xBC after the ID. */
-	{KORAD_KA3005P_0XBC, "Korad", "KA3005P",
-		"KORADKA3005PV2.0\xBC", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KA3005P_V42, "Korad", "KA3005P",
-		"KORAD KA3005P V4.2", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KA3005P_V55, "Korad", "KA3005P",
-		"KORAD KA3005P V5.5", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KD3005P, "Korad", "KD3005P",
-		"KORAD KD3005P V2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KD3005P_V20_NOSP, "Korad", "KD3005P",
-		"KORADKD3005PV2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KD3005P_V21_NOSP, "Korad", "KD3005P",
-		"KORADKD3005PV2.1", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{RND_320_KD3005P, "RND", "KD3005P",
-		"RND 320-KD3005P V4.2", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{RND_320_KA3005P, "RND", "KA3005P",
-		"RND 320-KA3005P V5.5", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{RND_320K30PV, "RND", "KA3005P",
-		"RND 320-KA3005P V2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{TENMA_72_2550_V2, "Tenma", "72-2550",
-		"TENMA72-2550V2.0", 1, {0, 61, 0.01}, {0, 3.1, 0.001}},
-	{TENMA_72_2540_V20, "Tenma", "72-2540",
-		"TENMA72-2540V2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{TENMA_72_2540_V21, "Tenma", "72-2540",
-		"TENMA 72-2540 V2.1", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{TENMA_72_2540_V52, "Tenma", "72-2540",
-		"TENMA 72-2540 V5.2", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{TENMA_72_2535_V21, "Tenma", "72-2535",
-		"TENMA 72-2535 V2.1", 1, {0, 31, 0.01}, {0, 3.1, 0.001}},
-	{TENMA_72_2710_V66, "Tenma", "72-2710",
-		"TENMA 72-2710 V6.6", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{STAMOS_SLS31_V20, "Stamos Soldering", "S-LS-31",
-		"S-LS-31 V2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
-	{KORAD_KD6005P, "Korad", "KD6005P",
-		"KORAD KD6005P V2.2", 1, {0, 61, 0.01}, {0, 5.1, 0.001}},
+	/* Vendor, model name, ID reply, channels, voltage, current, quirks. */
+	{"Korad", "KA3005P", "", 1, volts_30, amps_5,
+		KORAD_QUIRK_ID_TRAILING},
+	{"Korad", "KD3005P", "", 1, volts_30, amps_5, 0},
+	{"Korad", "KD6005P", "", 1, volts_60, amps_5, 0},
+	{"RND", "KA3005P", "RND 320-KA3005P", 1, volts_30, amps_5,
+		KORAD_QUIRK_ID_OPT_VERSION},
+	{"RND", "KD3005P", "RND 320-KD3005P", 1, volts_30, amps_5,
+		KORAD_QUIRK_ID_OPT_VERSION},
+	{"Stamos Soldering", "S-LS-31", "", 1, volts_30, amps_5,
+		KORAD_QUIRK_ID_NO_VENDOR},
+	{"Tenma", "72-2535", "", 1, volts_30, amps_3, 0},
+	{"Tenma", "72-2540", "", 1, volts_30, amps_5, 0},
+	{"Tenma", "72-2550", "", 1, volts_60, amps_3, 0},
+	{"Tenma", "72-2705", "", 1, volts_30, amps_3, 0},
+	{"Tenma", "72-2710", "", 1, volts_30, amps_5, 0},
+	{"Velleman", "LABPS3005D", "", 1, volts_30, amps_5,
+		KORAD_QUIRK_LABPS_OVP_EN},
+	{"Velleman", "PS3005D V1.3", "VELLEMANPS3005DV1.3" , 1, volts_30, amps_5,
+		KORAD_QUIRK_ID_TRAILING | KORAD_QUIRK_SLOW_PROCESSING},
+	{"Velleman", "PS3005D", "", 1, volts_30, amps_5, 0},
 	ALL_ZERO
 };
+
+/*
+ * Bump this when adding new models[] above. Make sure the text buffer
+ * for the ID response can hold the longest sequence that we expect in
+ * the field which consists of: vendor + model [ + version ][ + serno ].
+ * Don't be too generous here, the maximum receive buffer size affects
+ * the timeout within which the first response character is expected.
+ */
+static const size_t id_text_buffer_size = 48;
+
+/*
+ * Check whether the device's "*IDN?" response matches a supported model.
+ * The caller already stripped off the optional serial number.
+ */
+static gboolean model_matches(const struct korad_kaxxxxp_model *model,
+	const char *id_text)
+{
+	gboolean matches;
+	gboolean opt_version, skip_vendor, accept_trail;
+	const char *want;
+
+	if (!model)
+		return FALSE;
+
+	/*
+	 * When the models[] entry contains a specific response text,
+	 * then expect to see this very text in literal form. This
+	 * lets the driver map weird and untypical responses to a
+	 * specific set of display texts for vendor and model names.
+	 * Accept an optionally trailing version if models[] says so.
+	 */
+	if (model->id && model->id[0]) {
+		opt_version = model->quirks & KORAD_QUIRK_ID_OPT_VERSION;
+		if (!opt_version) {
+			matches = g_strcmp0(id_text, model->id) == 0;
+			if (!matches)
+				return FALSE;
+			sr_dbg("Matches expected ID text: '%s'.", model->id);
+			return TRUE;
+		}
+		matches = g_str_has_prefix(id_text, model->id);
+		if (!matches)
+			return FALSE;
+		id_text += strlen(model->id);
+		while (isspace((int)*id_text))
+			id_text++;
+		if (*id_text == 'V') {
+			id_text++;
+			while (*id_text == '.' || isdigit((int)*id_text))
+				id_text++;
+			while (isspace((int)*id_text))
+				id_text++;
+		}
+		if (*id_text)
+			return FALSE;
+		sr_dbg("Matches expected ID text [vers]: '%s'.", model->id);
+		return TRUE;
+	}
+
+	/*
+	 * A more generic approach which covers most devices: Check
+	 * for the very vendor and model names which also are shown
+	 * to users (the display texts). Weakened to match responses
+	 * more widely: Case insensitive checks, optional whitespace
+	 * in responses, optional version details. Optional trailing
+	 * garbage. Optional omission of the vendor name. Shall match
+	 * all the devices which were individually listed in earlier
+	 * implementations of the driver, and shall also match firmware
+	 * versions that were not listed before.
+	 */
+	skip_vendor = model->quirks & KORAD_QUIRK_ID_NO_VENDOR;
+	accept_trail = model->quirks & KORAD_QUIRK_ID_TRAILING;
+	if (!skip_vendor) {
+		want = model->vendor;
+		matches = g_ascii_strncasecmp(id_text, want, strlen(want)) == 0;
+		if (!matches)
+			return FALSE;
+		id_text += strlen(want);
+		while (isspace((int)*id_text))
+			id_text++;
+	}
+	want = model->name;
+	matches = g_ascii_strncasecmp(id_text, want, strlen(want)) == 0;
+	if (!matches)
+		return FALSE;
+	id_text += strlen(want);
+	while (isspace((int)*id_text))
+		id_text++;
+	if (*id_text == 'V') {
+		/* TODO Isolate and (also) return version details? */
+		id_text++;
+		while (*id_text == '.' || isdigit((int)*id_text))
+			id_text++;
+		while (isspace((int)*id_text))
+			id_text++;
+	}
+	if (accept_trail) {
+		/*
+		 * TODO Determine how many non-printables to accept here
+		 * and how strict to check for "known" garbage variants.
+		 */
+		switch (*id_text) {
+		case '\x01':
+		case '\xbc':
+			id_text++;
+			break;
+		case '\x00':
+			/* EMPTY */
+			break;
+		default:
+			return FALSE;
+		}
+	}
+	if (*id_text)
+		return FALSE;
+	sr_dbg("Matches generic '[vendor] model [vers] [trail]' pattern.");
+	return TRUE;
+}
+
+/* Lookup a model from an ID response text. */
+static const struct korad_kaxxxxp_model *model_lookup(const char *id_text)
+{
+	size_t idx;
+	const struct korad_kaxxxxp_model *check;
+
+	if (!id_text || !*id_text)
+		return NULL;
+	sr_dbg("Looking up: [%s].", id_text);
+
+	for (idx = 0; idx < ARRAY_SIZE(models); idx++) {
+		check = &models[idx];
+		if (!check->name || !check->name[0])
+			continue;
+		if (!model_matches(check, id_text))
+			continue;
+		sr_dbg("Found: [%s] [%s]", check->vendor, check->name);
+		return check;
+	}
+	sr_dbg("Not found");
+
+	return NULL;
+}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
@@ -107,7 +234,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	const char *force_detect;
 	struct sr_serial_dev_inst *serial;
 	char reply[50];
-	int ret, i, model_id;
+	int ret;
+	const struct korad_kaxxxxp_model *model;
 	size_t len;
 	char *serno;
 
@@ -144,17 +272,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	if (serial_open(serial, SERIAL_RDWR) != SR_OK)
 		return NULL;
 
-	/*
-	 * Prepare a receive buffer for the identification response that
-	 * is large enough to hold the longest known model name, and an
-	 * optional serial number. Communicate the identification request.
-	 */
-	len = 0;
-	for (i = 0; models[i].id; i++) {
-		if (len < strlen(models[i].id))
-			len = strlen(models[i].id);
-	}
-	len += strlen(serno_prefix) + 12;
+	/* Communicate the identification request. */
+	len = id_text_buffer_size;
 	if (len > sizeof(reply) - 1)
 		len = sizeof(reply) - 1;
 	sr_dbg("Want max %zu bytes.", len);
@@ -178,35 +297,25 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		serno += strlen(serno_prefix);
 	}
 
-	model_id = -1;
-	for (i = 0; models[i].id; i++) {
-		if (g_strcmp0(models[i].id, reply) != 0)
-			continue;
-		model_id = i;
-		break;
-	}
-	if (model_id < 0 && force_detect) {
-		sr_warn("Found model ID '%s' is unknown, trying '%s' spec.",
+	model = model_lookup(reply);
+	if (!model && force_detect) {
+		sr_warn("Could not find model ID '%s', trying '%s'.",
 			reply, force_detect);
-		for (i = 0; models[i].id; i++) {
-			if (strcmp(models[i].id, force_detect) != 0)
-				continue;
+		model = model_lookup(force_detect);
+		if (model)
 			sr_info("Found replacement, using it instead.");
-			model_id = i;
-			break;
-		}
 	}
-	if (model_id < 0) {
-		sr_err("Unknown model ID '%s' detected, aborting.", reply);
+	if (!model) {
+		sr_err("Unsupported model ID '%s', aborting.", reply);
 		return NULL;
 	}
-	sr_dbg("Found: %s %s (idx %d, ID '%s').", models[model_id].vendor,
-		models[model_id].name, model_id, models[model_id].id);
+	sr_dbg("Found: %s %s (idx %zu).", model->vendor, model->name,
+		model - &models[0]);
 
-	sdi = g_malloc0(sizeof(struct sr_dev_inst));
+	sdi = g_malloc0(sizeof(*sdi));
 	sdi->status = SR_ST_INACTIVE;
-	sdi->vendor = g_strdup(models[model_id].vendor);
-	sdi->model = g_strdup(models[model_id].name);
+	sdi->vendor = g_strdup(model->vendor);
+	sdi->model = g_strdup(model->name);
 	if (serno)
 		sdi->serial_num = g_strdup(serno);
 	sdi->inst_type = SR_INST_SERIAL;
@@ -216,11 +325,11 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "V");
 	sr_channel_new(sdi, 1, SR_CHANNEL_ANALOG, TRUE, "I");
 
-	devc = g_malloc0(sizeof(struct dev_context));
+	devc = g_malloc0(sizeof(*devc));
 	sr_sw_limits_init(&devc->limits);
 	g_mutex_init(&devc->rw_mutex);
-	devc->model = &models[model_id];
-	devc->req_sent_at = 0;
+	devc->model = model;
+	devc->next_req_time = 0;
 	devc->cc_mode_1_changed = FALSE;
 	devc->cc_mode_2_changed = FALSE;
 	devc->output_enabled_changed = FALSE;
@@ -409,7 +518,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	sr_sw_limits_acquisition_start(&devc->limits);
 	std_session_send_df_header(sdi);
 
-	devc->req_sent_at = 0;
+	devc->next_req_time = 0;
 	serial = sdi->conn;
 	serial_source_add(sdi->session, serial, G_IO_IN,
 			KAXXXXP_POLL_INTERVAL_MS,

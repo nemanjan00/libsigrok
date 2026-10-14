@@ -19,12 +19,14 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <config.h>
+#include "config.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "protocol.h"
 
+/* These are the Modbus RTU registers for the DPS family of devices. */
 enum rdtech_dps_register {
 	REG_DPS_USET       = 0x00, /* Mirror of 0x50 */
 	REG_DPS_ISET       = 0x01, /* Mirror of 0x51 */
@@ -69,6 +71,11 @@ enum rdtech_dps_regulation_mode {
 	MODE_CC      = 1,
 };
 
+/*
+ * These are the Modbus RTU registers for the RD family of devices.
+ * Some registers are device specific, like REG_RD_RANGE of RD6012P
+ * which could be battery related in other devices.
+ */
 enum rdtech_rd_register {
 	REG_RD_MODEL = 0, /* u16 */
 	REG_RD_SERIAL = 1, /* u32 */
@@ -85,6 +92,8 @@ enum rdtech_rd_register {
 	REG_RD_PROTECT = 16, /* u16 */
 	REG_RD_REGULATION = 17, /* u16 */
 	REG_RD_ENABLE = 18, /* u16 */
+	REG_RD_PRESET = 19, /* u16 */
+	REG_RD_RANGE = 20, /* u16 */
 	/*
 	 * Battery at 32 == 0x20 pp:
 	 * Mode, voltage, temperature, capacity, energy.
@@ -200,7 +209,7 @@ SR_PRIV int rdtech_dps_get_model_version(struct sr_modbus_dev_inst *modbus,
 		if (ret != SR_OK)
 			return ret;
 		rdptr = (void *)registers;
-		*model = read_u16be_inc(&rdptr) / 10;
+		*model = read_u16be_inc(&rdptr);
 		*serno = read_u32be_inc(&rdptr);
 		*version = read_u16be_inc(&rdptr);
 		sr_info("RDTech RD model: %u version: %u, serno %u",
@@ -211,6 +220,49 @@ SR_PRIV int rdtech_dps_get_model_version(struct sr_modbus_dev_inst *modbus,
 		return SR_ERR_ARG;
 	}
 	/* UNREACH */
+}
+
+SR_PRIV void rdtech_dps_update_multipliers(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc;
+	const struct rdtech_dps_range *range;
+
+	devc = sdi->priv;
+	range = &devc->model->ranges[devc->curr_range];
+	devc->current_multiplier = pow(10.0, range->current_digits);
+	devc->voltage_multiplier = pow(10.0, range->voltage_digits);
+}
+
+/*
+ * Determine range of connected device. Don't do anything once
+ * acquisition has started (since the range will then be tracked).
+ */
+SR_PRIV int rdtech_dps_update_range(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc;
+	uint16_t range;
+	int ret;
+
+	devc = sdi->priv;
+
+	/*
+	 * Only update range if there are multiple ranges and data
+	 * acquisition hasn't started.
+	 */
+	if (devc->model->n_ranges <= 1 || devc->acquisition_started)
+		return SR_OK;
+	if (devc->model->model_type != MODEL_RD)
+		return SR_ERR;
+
+	ret = rdtech_dps_read_holding_registers(sdi->conn,
+		REG_RD_RANGE, 1, &range);
+	if (ret != SR_OK)
+		return ret;
+	range = range ? 1 : 0;
+	devc->curr_range = range;
+	rdtech_dps_update_multipliers(sdi);
+
+	return SR_OK;
 }
 
 /* Send a measured value to the session feed. */
@@ -259,13 +311,15 @@ SR_PRIV int rdtech_dps_get_state(const struct sr_dev_inst *sdi,
 	struct dev_context *devc;
 	struct sr_modbus_dev_inst *modbus;
 	gboolean get_config, get_init_state, get_curr_meas;
-	uint16_t registers[12];
+	uint16_t registers[14];
 	int ret;
 	const uint8_t *rdptr;
 	uint16_t uset_raw, iset_raw, uout_raw, iout_raw, power_raw;
 	uint16_t reg_val, reg_state, out_state, ovpset_raw, ocpset_raw;
 	gboolean is_lock, is_out_enabled, is_reg_cc;
 	gboolean uses_ovp, uses_ocp;
+	gboolean have_range;
+	uint16_t range;
 	float volt_target, curr_limit;
 	float ovp_threshold, ocp_threshold;
 	float curr_voltage, curr_current, curr_power;
@@ -308,6 +362,10 @@ SR_PRIV int rdtech_dps_get_state(const struct sr_dev_inst *sdi,
 	(void)get_init_state;
 	(void)get_curr_meas;
 
+	have_range = devc->model->n_ranges > 1;
+	if (!have_range)
+		range = 0;
+
 	switch (devc->model->model_type) {
 	case MODEL_DPS:
 		/*
@@ -320,7 +378,8 @@ SR_PRIV int rdtech_dps_get_state(const struct sr_dev_inst *sdi,
 		 */
 		g_mutex_lock(&devc->rw_mutex);
 		ret = rdtech_dps_read_holding_registers(modbus,
-			REG_DPS_USET, 10, registers);
+			REG_DPS_USET, REG_DPS_ENABLE - REG_DPS_USET + 1,
+			registers);
 		g_mutex_unlock(&devc->rw_mutex);
 		if (ret != SR_OK)
 			return ret;
@@ -369,7 +428,11 @@ SR_PRIV int rdtech_dps_get_state(const struct sr_dev_inst *sdi,
 		/* Retrieve a set of adjacent registers. */
 		g_mutex_lock(&devc->rw_mutex);
 		ret = rdtech_dps_read_holding_registers(modbus,
-			REG_RD_VOLT_TGT, 11, registers);
+			REG_RD_VOLT_TGT,
+			devc->model->n_ranges > 1
+				? REG_RD_RANGE - REG_RD_VOLT_TGT + 1
+				: REG_RD_ENABLE - REG_RD_VOLT_TGT + 1,
+			registers);
 		g_mutex_unlock(&devc->rw_mutex);
 		if (ret != SR_OK)
 			return ret;
@@ -396,6 +459,10 @@ SR_PRIV int rdtech_dps_get_state(const struct sr_dev_inst *sdi,
 		is_reg_cc = reg_state == MODE_CC;
 		out_state = read_u16be_inc(&rdptr); /* ENABLE */
 		is_out_enabled = out_state != 0;
+		if (have_range) {
+			(void)read_u16be_inc(&rdptr); /* PRESET */
+			range = read_u16be_inc(&rdptr) ? 1 : 0; /* RANGE */
+		}
 
 		/* Retrieve a set of adjacent registers. */
 		g_mutex_lock(&devc->rw_mutex);
@@ -456,6 +523,10 @@ SR_PRIV int rdtech_dps_get_state(const struct sr_dev_inst *sdi,
 	state->mask |= STATE_CURRENT;
 	state->power = curr_power;
 	state->mask |= STATE_POWER;
+	if (have_range) {
+		state->range = range;
+		state->mask |= STATE_RANGE;
+	}
 
 	return SR_OK;
 }
@@ -575,6 +646,42 @@ SR_PRIV int rdtech_dps_set_state(const struct sr_dev_inst *sdi,
 			return SR_ERR_ARG;
 		}
 	}
+	if (state->mask & STATE_RANGE) {
+		reg_value = state->range;
+		switch (devc->model->model_type) {
+		case MODEL_DPS:
+			/* DPS models don't support current ranges at all. */
+			if (reg_value > 0)
+				return SR_ERR_ARG;
+			break;
+		case MODEL_RD:
+			/*
+			 * Reject unsupported range indices.
+			 * Need not set the range when the device only
+			 * supports a single fixed range.
+			 */
+			if (reg_value >= devc->model->n_ranges)
+				return SR_ERR_NA;
+			if (devc->model->n_ranges <= 1)
+				return SR_OK;
+			ret = rdtech_rd_set_reg(sdi, REG_RD_RANGE, reg_value);
+			if (ret != SR_OK)
+				return ret;
+			/*
+			 * Immediately update internal state outside of
+			 * an acquisition. Assume that in-acquisition
+			 * activity will update internal state. This is
+			 * essential for meta package emission.
+			 */
+			if (!devc->acquisition_started) {
+				devc->curr_range = reg_value;
+				rdtech_dps_update_multipliers(sdi);
+			}
+			break;
+		default:
+			return SR_ERR_ARG;
+		}
+	}
 
 	return SR_OK;
 }
@@ -602,6 +709,10 @@ SR_PRIV int rdtech_dps_seed_receive(const struct sr_dev_inst *sdi)
 		devc->curr_cc_state = state.regulation_cc;
 	if (state.mask & STATE_OUTPUT_ENABLED)
 		devc->curr_out_state = state.output_enabled;
+	if (state.mask & STATE_RANGE) {
+		devc->curr_range = state.range;
+		rdtech_dps_update_multipliers(sdi);
+	}
 
 	return SR_OK;
 }
@@ -614,7 +725,7 @@ SR_PRIV int rdtech_dps_receive_data(int fd, int revents, void *cb_data)
 	struct rdtech_dps_state state;
 	int ret;
 	struct sr_channel *ch;
-	const char *regulation_text;
+	const char *regulation_text, *range_text;
 
 	(void)fd;
 	(void)revents;
@@ -635,11 +746,11 @@ SR_PRIV int rdtech_dps_receive_data(int fd, int revents, void *cb_data)
 	ch = g_slist_nth_data(sdi->channels, 0);
 	send_value(sdi, ch, state.voltage,
 		SR_MQ_VOLTAGE, SR_MQFLAG_DC, SR_UNIT_VOLT,
-		devc->model->voltage_digits);
+		devc->model->ranges[devc->curr_range].voltage_digits);
 	ch = g_slist_nth_data(sdi->channels, 1);
 	send_value(sdi, ch, state.current,
 		SR_MQ_CURRENT, SR_MQFLAG_DC, SR_UNIT_AMPERE,
-		devc->model->current_digits);
+		devc->model->ranges[devc->curr_range].current_digits);
 	ch = g_slist_nth_data(sdi->channels, 2);
 	send_value(sdi, ch, state.power,
 		SR_MQ_POWER, 0, SR_UNIT_WATT, 2);
@@ -668,6 +779,13 @@ SR_PRIV int rdtech_dps_receive_data(int fd, int revents, void *cb_data)
 		(void)sr_session_send_meta(sdi, SR_CONF_ENABLED,
 			g_variant_new_boolean(state.output_enabled));
 		devc->curr_out_state = state.output_enabled;
+	}
+	if (devc->curr_range != state.range) {
+		range_text = devc->model->ranges[state.range].range_str;
+		(void)sr_session_send_meta(sdi, SR_CONF_RANGE,
+			g_variant_new_string(range_text));
+		devc->curr_range = state.range;
+		rdtech_dps_update_multipliers(sdi);
 	}
 
 	/* Check optional acquisition limits. */

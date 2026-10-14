@@ -38,6 +38,18 @@ static const uint32_t devopts[] = {
 	SR_CONF_CONTINUOUS,
 	SR_CONF_CONN | SR_CONF_GET,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_LIMIT_MSEC | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
+	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET,
+};
+
+static const int32_t trigger_matches[] = {
+	SR_TRIGGER_ZERO,
+	SR_TRIGGER_ONE,
+	SR_TRIGGER_RISING,
+	SR_TRIGGER_FALLING,
+	SR_TRIGGER_EDGE,
 };
 
 static const char *channel_names[] = {
@@ -45,13 +57,49 @@ static const char *channel_names[] = {
 	"8", "9", "10", "11", "12", "13", "14", "15",
 };
 
+static const struct saleae_logic_pro_profile profiles[] = {
+	{ 0x1005, "Logic Pro 8", 8,
+	  "saleae-logicpro8-logic2-fx3.fw",
+	  "saleae-logicpro8-logic2-fpga.bitstream", TRUE },
+	{ 0x1006, "Logic Pro 16", 16,
+	  "saleae-logicpro16-fx3.fw", "saleae-logicpro16-fpga.bitstream",
+	  FALSE },
+};
+
+static const struct saleae_logic_pro_profile *find_profile(uint16_t vid, uint16_t pid)
+{
+	unsigned int i;
+
+	if (vid != 0x21a9)
+		return NULL;
+	for (i = 0; i < ARRAY_SIZE(profiles); i++)
+		if (profiles[i].pid == pid)
+			return &profiles[i];
+
+	return NULL;
+}
+
+/*
+ * The digital sample clock is 500 MHz divided by (5 * n), or the full
+ * 500 MHz. See saleae_logic_pro_prepare() for the register encoding.
+ */
 static const uint64_t samplerates[] = {
+	SR_KHZ(10),
+	SR_KHZ(20),
+	SR_KHZ(50),
+	SR_KHZ(100),
+	SR_KHZ(200),
+	SR_KHZ(500),
 	SR_MHZ(1),
 	SR_MHZ(2),
 	SR_KHZ(2500),
+	SR_MHZ(5),
 	SR_MHZ(10),
+	SR_MHZ(20),
 	SR_MHZ(25),
 	SR_MHZ(50),
+	SR_MHZ(100),
+	SR_MHZ(500),
 };
 
 #define FW_HEADER_SIZE 7
@@ -172,6 +220,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	struct libusb_device_descriptor des;
 	const char *conn;
 	char connection_id[64];
+	const struct saleae_logic_pro_profile *prof;
 	gboolean fw_loaded = FALSE;
 
 	devices = NULL;
@@ -194,16 +243,16 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	for (unsigned int i = 0; devlist[i]; i++) {
 		libusb_get_device_descriptor(devlist[i], &des);
 
-		if (des.idVendor != 0x21a9 || des.idProduct != 0x1006)
+		if (!(prof = find_profile(des.idVendor, des.idProduct)))
 			continue;
 
 		if (!scan_firmware(devlist[i])) {
-			const char *fwname;
-			sr_info("Found a Logic Pro 16 device (no firmware loaded).");
-			fwname = "saleae-logicpro16-fx3.fw";
+			sr_info("Found a %s device (no firmware loaded).",
+				prof->model);
 			if (upload_firmware(drvc->sr_ctx, devlist[i],
-					    fwname) != SR_OK) {
-				sr_err("Firmware upload failed, name %s.", fwname);
+					    prof->fw_name) != SR_OK) {
+				sr_err("Firmware upload failed, name %s.",
+				       prof->fw_name);
 				continue;
 			};
 			fw_loaded = TRUE;
@@ -211,10 +260,22 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	}
 	if (fw_loaded) {
-		/* Give the device some time to come back and scan again */
-		libusb_free_device_list(devlist, 1);
-		g_usleep(500 * 1000);
-		libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
+		/* Wait (up to 5 s) for the device to re-enumerate. */
+		for (unsigned int t = 0; t < 50; t++) {
+			gboolean back = FALSE;
+
+			libusb_free_device_list(devlist, 1);
+			g_usleep(100 * 1000);
+			libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
+			for (unsigned int i = 0; devlist[i]; i++) {
+				libusb_get_device_descriptor(devlist[i], &des);
+				if (find_profile(des.idVendor, des.idProduct) &&
+				    scan_firmware(devlist[i]))
+					back = TRUE;
+			}
+			if (back)
+				break;
+		}
 	}
 	if (conn)
 		conn_devices = sr_usb_find(drvc->sr_ctx->libusb_ctx, conn);
@@ -237,7 +298,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 		libusb_get_device_descriptor(devlist[i], &des);
 
-		if (des.idVendor != 0x21a9 || des.idProduct != 0x1006)
+		if (!(prof = find_profile(des.idVendor, des.idProduct)))
 			continue;
 
 		if (usb_get_port_path(devlist[i], connection_id, sizeof(connection_id)) < 0)
@@ -246,20 +307,22 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi = g_malloc0(sizeof(struct sr_dev_inst));
 		sdi->status = SR_ST_INITIALIZING;
 		sdi->vendor = g_strdup("Saleae");
-		sdi->model = g_strdup("Logic Pro 16");
+		sdi->model = g_strdup(prof->model);
 		sdi->connection_id = g_strdup(connection_id);
 
-		for (unsigned int j = 0; j < ARRAY_SIZE(channel_names); j++)
+		for (unsigned int j = 0; j < prof->num_channels; j++)
 			sr_channel_new(sdi, j, SR_CHANNEL_LOGIC, TRUE,
 				       channel_names[j]);
 
-		sr_dbg("Found a Logic Pro 16 device.");
+		sr_dbg("Found a %s device.", prof->model);
 		sdi->status = SR_ST_INACTIVE;
 		sdi->inst_type = SR_INST_USB;
 		sdi->conn = sr_usb_dev_inst_new(libusb_get_bus_number(devlist[i]),
 						libusb_get_device_address(devlist[i]), NULL);
 
 		devc = g_malloc0(sizeof(struct dev_context));
+		devc->profile = prof;
+		sr_sw_limits_init(&devc->limits);
 		sdi->priv = devc;
 		devices = g_slist_append(devices, sdi);
 
@@ -286,9 +349,15 @@ static int dev_open(struct sr_dev_inst *sdi)
 		return SR_ERR;
 	}
 
+	/*
+	 * Like the vendor software, clear any halt left by a previous
+	 * (possibly aborted) session.
+	 */
+	libusb_clear_halt(usb->devhdl, 1 | LIBUSB_ENDPOINT_IN);
+
 	/* Configure default samplerate. */
 	if (devc->dig_samplerate == 0)
-		devc->dig_samplerate = samplerates[3];
+		devc->dig_samplerate = SR_MHZ(10);
 
 	return saleae_logic_pro_init(sdi);
 }
@@ -321,6 +390,18 @@ static int config_get(uint32_t key, GVariant **data,
 		devc = sdi->priv;
 		*data = g_variant_new_uint64(devc->dig_samplerate);
 		break;
+	case SR_CONF_LIMIT_SAMPLES:
+	case SR_CONF_LIMIT_MSEC:
+		if (!sdi)
+			return SR_ERR;
+		devc = sdi->priv;
+		return sr_sw_limits_config_get(&devc->limits, key, data);
+	case SR_CONF_CAPTURE_RATIO:
+		if (!sdi)
+			return SR_ERR;
+		devc = sdi->priv;
+		*data = g_variant_new_uint64(devc->capture_ratio);
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -341,6 +422,14 @@ static int config_set(uint32_t key, GVariant *data,
 	case SR_CONF_SAMPLERATE:
 		devc->dig_samplerate = g_variant_get_uint64(data);
 		break;
+	case SR_CONF_LIMIT_SAMPLES:
+	case SR_CONF_LIMIT_MSEC:
+		return sr_sw_limits_config_set(&devc->limits, key, data);
+	case SR_CONF_CAPTURE_RATIO:
+		devc->capture_ratio = g_variant_get_uint64(data);
+		if (devc->capture_ratio > 100)
+			return SR_ERR_ARG;
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -357,6 +446,9 @@ static int config_list(uint32_t key, GVariant **data,
 		return STD_CONFIG_LIST(key, data, sdi, cg, scanopts, drvopts, devopts);
 	case SR_CONF_SAMPLERATE:
 		*data = std_gvar_samplerates(ARRAY_AND_SIZE(samplerates));
+		break;
+	case SR_CONF_TRIGGER_MATCH:
+		*data = std_gvar_array_i32(ARRAY_AND_SIZE(trigger_matches));
 		break;
 	default:
 		return SR_ERR_NA;
@@ -379,6 +471,7 @@ static void dev_acquisition_abort(const struct sr_dev_inst *sdi)
 static int dev_acquisition_handle(int fd, int revents, void *cb_data)
 {
 	struct sr_dev_inst *sdi = cb_data;
+	struct dev_context *devc = sdi->priv;
 	struct drv_context *drvc = sdi->driver->context;
 	struct timeval tv = ALL_ZERO;
 
@@ -386,9 +479,11 @@ static int dev_acquisition_handle(int fd, int revents, void *cb_data)
 
 	libusb_handle_events_timeout(drvc->sr_ctx->libusb_ctx, &tv);
 
-	/* Handle timeout */
-	if (!revents)
+	/* Handle timeout or reached limits. */
+	if (!revents || devc->acq_done) {
+		sr_dbg("Stopping: %s.", devc->acq_done ? "done" : "timeout");
 		sr_dev_acquisition_stop(sdi);
+	}
 
 	return TRUE;
 }
@@ -399,6 +494,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	struct drv_context *drvc = sdi->driver->context;
 	struct libusb_transfer *transfer;
 	struct sr_usb_dev_inst *usb;
+	struct sr_trigger *trigger;
 	uint8_t *buf;
 	unsigned int i, ret;
 
@@ -408,7 +504,31 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 
 	usb = sdi->conn;
 
+	/* The stream endpoint may be halted after an aborted session. */
+	libusb_clear_halt(usb->devhdl, 2 | LIBUSB_ENDPOINT_IN);
+
 	devc->conv_buffer = g_malloc(CONV_BUFFER_SIZE);
+	devc->acq_done = FALSE;
+	devc->submitted_transfers = 0;
+	sr_sw_limits_acquisition_start(&devc->limits);
+
+	/* Saleae hardware has no trigger unit; triggers are done on the host. */
+	devc->unitsize = logic_channel_unitsize(sdi->channels);
+	devc->trigger_fired = TRUE;
+	devc->stl = NULL;
+	if ((trigger = sr_session_trigger_get(sdi->session))) {
+		int pre_trigger_samples = 0;
+		if (devc->limits.limit_samples)
+			pre_trigger_samples = devc->capture_ratio *
+				devc->limits.limit_samples / 100;
+		devc->stl = soft_trigger_logic_new(sdi, trigger,
+						   pre_trigger_samples);
+		if (!devc->stl) {
+			g_free(devc->conv_buffer);
+			return SR_ERR_MALLOC;
+		}
+		devc->trigger_fired = FALSE;
+	}
 
 	devc->num_transfers = BUF_COUNT;
 	devc->transfers = g_malloc0(sizeof(*devc->transfers) * BUF_COUNT);
@@ -445,14 +565,37 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
 	struct drv_context *drvc = sdi->driver->context;
+	struct timeval tv = { .tv_sec = 0, .tv_usec = 100 * 1000 };
+	unsigned int i;
+
+	/* Already stopped (e.g. limits reached, then stopped by the session). */
+	if (!devc->transfers)
+		return SR_OK;
+
+	devc->acq_done = TRUE;
 
 	saleae_logic_pro_stop(sdi);
+
+	/* Cancel and reap all streaming transfers before freeing buffers. */
+	dev_acquisition_abort(sdi);
+	for (i = 0; devc->submitted_transfers && i < 50; i++)
+		libusb_handle_events_timeout(drvc->sr_ctx->libusb_ctx, &tv);
+	if (devc->submitted_transfers)
+		sr_warn("%u transfers still pending.", devc->submitted_transfers);
 
 	std_session_send_df_end(sdi);
 
 	usb_source_remove(sdi->session, drvc->sr_ctx);
 
+	g_free(devc->transfers);
+	devc->transfers = NULL;
+	devc->num_transfers = 0;
 	g_free(devc->conv_buffer);
+	devc->conv_buffer = NULL;
+	if (devc->stl) {
+		soft_trigger_logic_free(devc->stl);
+		devc->stl = NULL;
+	}
 
 	return SR_OK;
 }

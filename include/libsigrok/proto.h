@@ -253,6 +253,10 @@ SR_API uint64_t sr_parse_timestring(const char *timestring);
 SR_API gboolean sr_parse_boolstring(const char *boolstring);
 SR_API int sr_parse_period(const char *periodstr, uint64_t *p, uint64_t *q);
 SR_API int sr_parse_voltage(const char *voltstr, uint64_t *p, uint64_t *q);
+SR_API char **sr_parse_probe_names(const char *spec,
+	const char **dflt_names, size_t dflt_count,
+	size_t max_count, size_t *ret_count);
+SR_API void sr_free_probe_names(char **names);
 SR_API int sr_sprintf_ascii(char *buf, const char *format, ...);
 SR_API int sr_vsprintf_ascii(char *buf, const char *format, va_list args);
 SR_API int sr_snprintf_ascii(char *buf, size_t buf_size,
@@ -260,6 +264,11 @@ SR_API int sr_snprintf_ascii(char *buf, size_t buf_size,
 SR_API int sr_vsnprintf_ascii(char *buf, size_t buf_size,
 		const char *format, va_list args);
 SR_API int sr_parse_rational(const char *str, struct sr_rational *ret);
+SR_API char *sr_text_trim_spaces(char *s);
+SR_API char *sr_text_next_line(char *s, size_t l, char **next, size_t *taken);
+SR_API char *sr_text_next_word(char *s, char **next);
+
+SR_API int sr_next_power_of_two(size_t value, size_t *bits, size_t *power);
 
 /*--- version.c -------------------------------------------------------------*/
 

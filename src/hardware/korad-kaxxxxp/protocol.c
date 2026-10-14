@@ -22,9 +22,10 @@
 #include "protocol.h"
 
 #define DEVICE_PROCESSING_TIME_MS 80
+#define EXTRA_PROCESSING_TIME_MS  450
 
 SR_PRIV int korad_kaxxxxp_send_cmd(struct sr_serial_dev_inst *serial,
-				const char *cmd)
+	const char *cmd)
 {
 	int ret;
 
@@ -155,96 +156,112 @@ static void give_device_time_to_process(struct dev_context *devc)
 {
 	int64_t sleeping_time;
 
-	sleeping_time = devc->req_sent_at + (DEVICE_PROCESSING_TIME_MS * 1000);
-	sleeping_time -= g_get_monotonic_time();
+	if (!devc->next_req_time)
+		return;
 
+	sleeping_time = devc->next_req_time - g_get_monotonic_time();
 	if (sleeping_time > 0) {
 		g_usleep(sleeping_time);
 		sr_spew("Sleeping for processing %" PRIi64 " usec", sleeping_time);
 	}
 }
 
-SR_PRIV int korad_kaxxxxp_set_value(struct sr_serial_dev_inst *serial,
-				int target, struct dev_context *devc)
+static int64_t next_req_time(struct dev_context *devc,
+	gboolean is_set, int target)
 {
-	char *msg;
-	const char *cmd;
-	float value;
+	gboolean is_slow_device, is_long_command;
+	int64_t processing_time_us;
+
+	is_slow_device = devc->model->quirks & KORAD_QUIRK_SLOW_PROCESSING;
+	is_long_command = is_set;
+	is_long_command |= target == KAXXXXP_STATUS;
+
+	processing_time_us = DEVICE_PROCESSING_TIME_MS;
+	if (is_slow_device && is_long_command)
+		processing_time_us += EXTRA_PROCESSING_TIME_MS;
+	processing_time_us *= 1000;
+
+	return g_get_monotonic_time() + processing_time_us;
+}
+
+SR_PRIV int korad_kaxxxxp_set_value(struct sr_serial_dev_inst *serial,
+	int target, struct dev_context *devc)
+{
+	char msg[20];
 	int ret;
 
 	g_mutex_lock(&devc->rw_mutex);
 	give_device_time_to_process(devc);
 
+	msg[0] = '\0';
+	ret = SR_OK;
 	switch (target) {
 	case KAXXXXP_CURRENT:
 	case KAXXXXP_VOLTAGE:
 	case KAXXXXP_STATUS:
-		sr_err("Can't set measurable parameter %d.", target);
-		g_mutex_unlock(&devc->rw_mutex);
-		return SR_ERR;
+		sr_err("Can't set measured value %d.", target);
+		ret = SR_ERR;
+		break;
 	case KAXXXXP_CURRENT_LIMIT:
-		cmd = "ISET1:%05.3f";
-		value = devc->set_current_limit;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"ISET1:%05.3f", devc->set_current_limit);
 		break;
 	case KAXXXXP_VOLTAGE_TARGET:
-		cmd = "VSET1:%05.2f";
-		value = devc->set_voltage_target;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"VSET1:%05.2f", devc->set_voltage_target);
 		break;
 	case KAXXXXP_OUTPUT:
-		cmd = "OUT%01.0f";
-		value = (devc->set_output_enabled) ? 1 : 0;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"OUT%1d", (devc->set_output_enabled) ? 1 : 0);
 		/* Set value back to recognize changes */
 		devc->output_enabled = devc->set_output_enabled;
 		break;
 	case KAXXXXP_BEEP:
-		cmd = "BEEP%01.0f";
-		value = (devc->set_beep_enabled) ? 1 : 0;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"BEEP%1d", (devc->set_beep_enabled) ? 1 : 0);
 		break;
 	case KAXXXXP_OCP:
-		cmd = "OCP%01.0f";
-		value = (devc->set_ocp_enabled) ? 1 : 0;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"OCP%1d", (devc->set_ocp_enabled) ? 1 : 0);
 		/* Set value back to recognize changes */
 		devc->ocp_enabled = devc->set_ocp_enabled;
 		break;
 	case KAXXXXP_OVP:
-		cmd = "OVP%01.0f";
-		value = (devc->set_ovp_enabled) ? 1 : 0;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"OVP%1d", (devc->set_ovp_enabled) ? 1 : 0);
 		/* Set value back to recognize changes */
 		devc->ovp_enabled = devc->set_ovp_enabled;
 		break;
 	case KAXXXXP_SAVE:
-		cmd = "SAV%01.0f";
 		if (devc->program < 1 || devc->program > 5) {
-			sr_err("Only programs 1-5 supported and %d isn't "
-			       "between them.", devc->program);
-			g_mutex_unlock(&devc->rw_mutex);
-			return SR_ERR;
+			sr_err("Program %d is not in the supported 1-5 range.",
+			       devc->program);
+			ret = SR_ERR;
+			break;
 		}
-		value = devc->program;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"SAV%1d", devc->program);
 		break;
 	case KAXXXXP_RECALL:
-		cmd = "RCL%01.0f";
 		if (devc->program < 1 || devc->program > 5) {
-			sr_err("Only programs 1-5 supported and %d isn't "
-			       "between them.", devc->program);
-			g_mutex_unlock(&devc->rw_mutex);
-			return SR_ERR;
+			sr_err("Program %d is not in the supported 1-5 range.",
+			       devc->program);
+			ret = SR_ERR;
+			break;
 		}
-		value = devc->program;
+		sr_snprintf_ascii(msg, sizeof(msg),
+			"RCL%1d", devc->program);
 		break;
 	default:
-		sr_err("Don't know how to set %d.", target);
-		g_mutex_unlock(&devc->rw_mutex);
-		return SR_ERR;
+		sr_err("Don't know how to set target %d.", target);
+		ret = SR_ERR;
+		break;
 	}
 
-	msg = g_malloc0(20 + 1);
-	if (cmd)
-		sr_snprintf_ascii(msg, 20, cmd, value);
-
-	ret = korad_kaxxxxp_send_cmd(serial, msg);
-	devc->req_sent_at = g_get_monotonic_time();
-	g_free(msg);
+	if (ret == SR_OK && msg[0]) {
+		ret = korad_kaxxxxp_send_cmd(serial, msg);
+		devc->next_req_time = next_req_time(devc, TRUE, target);
+	}
 
 	g_mutex_unlock(&devc->rw_mutex);
 
@@ -252,12 +269,13 @@ SR_PRIV int korad_kaxxxxp_set_value(struct sr_serial_dev_inst *serial,
 }
 
 SR_PRIV int korad_kaxxxxp_get_value(struct sr_serial_dev_inst *serial,
-				int target, struct dev_context *devc)
+	int target, struct dev_context *devc)
 {
 	int ret, count;
 	char reply[6];
 	float *value;
 	char status_byte;
+	gboolean needs_ovp_quirk;
 	gboolean prev_status;
 
 	g_mutex_lock(&devc->rw_mutex);
@@ -297,11 +315,14 @@ SR_PRIV int korad_kaxxxxp_get_value(struct sr_serial_dev_inst *serial,
 		break;
 	default:
 		sr_err("Don't know how to query %d.", target);
+		ret = SR_ERR;
+	}
+	if (ret < 0) {
 		g_mutex_unlock(&devc->rw_mutex);
-		return SR_ERR;
+		return ret;
 	}
 
-	devc->req_sent_at = g_get_monotonic_time();
+	devc->next_req_time = next_req_time(devc, FALSE, target);
 
 	if ((ret = korad_kaxxxxp_read_chars(serial, count, reply)) < 0) {
 		g_mutex_unlock(&devc->rw_mutex);
@@ -342,9 +363,8 @@ SR_PRIV int korad_kaxxxxp_get_value(struct sr_serial_dev_inst *serial,
 		devc->output_enabled_changed = devc->output_enabled != prev_status;
 
 		/* OVP enabled, special handling for Velleman LABPS3005 quirk. */
-		if ((devc->model->model_id == VELLEMAN_LABPS3005D && devc->output_enabled) ||
-			devc->model->model_id != VELLEMAN_LABPS3005D) {
-
+		needs_ovp_quirk = devc->model->quirks & KORAD_QUIRK_LABPS_OVP_EN;
+		if (!needs_ovp_quirk || devc->output_enabled) {
 			prev_status = devc->ovp_enabled;
 			devc->ovp_enabled = status_byte & (1 << 7);
 			devc->ovp_enabled_changed = devc->ovp_enabled != prev_status;
@@ -374,7 +394,7 @@ SR_PRIV int korad_kaxxxxp_get_value(struct sr_serial_dev_inst *serial,
 }
 
 SR_PRIV int korad_kaxxxxp_get_all_values(struct sr_serial_dev_inst *serial,
-				struct dev_context *devc)
+	struct dev_context *devc)
 {
 	int ret, target;
 

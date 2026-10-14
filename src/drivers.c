@@ -25,11 +25,12 @@
 #include "libsigrok-internal.h"
 
 /*
- * sr_driver_list is a special section contains pointers to all the hardware
- * drivers built into the library. The __start and __stop symbols are
- * created from driver_list_start.c and driver_list_stop.c, and point to the
- * start and end of the section. They are used to iterate over the list of
- * all drivers.
+ * The special __sr_driver_list section contains pointers to all hardware
+ * drivers which were built into the library according to its configuration
+ * (will depend on the availability of dependencies, as well as user provided
+ * specs). The __start and __stop symbols point to the start and end of the
+ * section. They are used to iterate over the list of all drivers which were
+ * included in the library.
  */
 SR_PRIV extern const struct sr_dev_driver *sr_driver_list__start[];
 SR_PRIV extern const struct sr_dev_driver *sr_driver_list__stop[];
@@ -51,6 +52,5 @@ SR_API void sr_drivers_init(struct sr_context *ctx)
 	     drivers < sr_driver_list__stop; drivers++)
 		g_array_append_val(array, *drivers);
 #endif
-	ctx->driver_list = (struct sr_dev_driver **)array->data;
-	g_array_free(array, FALSE);
+	ctx->driver_list = (struct sr_dev_driver **)g_array_free(array, FALSE);
 }

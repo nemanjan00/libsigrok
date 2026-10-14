@@ -20,6 +20,8 @@
 #include <config.h>
 #include "protocol.h"
 
+#define SCAN_EXPECTED_VENDOR 0x0403
+
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -123,51 +125,61 @@ err_free_devc:
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	int i, ret, model;
 	struct drv_context *drvc;
-	GSList *devices, *conn_devices, *l;
+	GSList *devices;
+	const char *conn;
+	int ret;
+	GSList *conn_devices, *l;
+	size_t i;
 	struct sr_usb_dev_inst *usb;
-	struct sr_config *src;
+	uint8_t bus, addr;
 	struct libusb_device_descriptor des;
 	libusb_device **devlist;
 	struct libusb_device_handle *hdl;
-	const char *conn;
 	char product[64], serial_num[64], connection_id[64];
+	int model;
 
 	drvc = di->context;
+	devices = NULL;
 
 	conn = NULL;
-	for (l = options; l; l = l->next) {
-		src = l->data;
-		switch (src->key) {
-		case SR_CONF_CONN:
-			conn = g_variant_get_string(src->data, NULL);
-			break;
-		}
-	}
+	(void)sr_serial_extract_options(options, &conn, NULL);
+	conn_devices = NULL;
 	if (conn)
 		conn_devices = sr_usb_find(drvc->sr_ctx->libusb_ctx, conn);
-	else
-		conn_devices = NULL;
 
-	devices = NULL;
 	libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
-
 	for (i = 0; devlist[i]; i++) {
+		bus = libusb_get_bus_number(devlist[i]);
+		addr = libusb_get_device_address(devlist[i]);
 		if (conn) {
+			/* Check if the connection matches the user spec. */
 			for (l = conn_devices; l; l = l->next) {
 				usb = l->data;
-				if (usb->bus == libusb_get_bus_number(devlist[i])
-					&& usb->address == libusb_get_device_address(devlist[i]))
+				if (usb->bus == bus && usb->address == addr)
 					break;
 			}
 			if (!l)
-				/* This device matched none of the ones that
-				 * matched the conn specification. */
 				continue;
 		}
 
 		libusb_get_device_descriptor(devlist[i], &des);
+
+		/*
+		 * In theory we'd accept any USB device with a matching
+		 * product string. In practice the enumeration takes a
+		 * shortcut and only inspects devices when their USB VID
+		 * matches the expectation. This avoids access to flaky
+		 * devices which are unrelated to measurement purposes
+		 * yet cause trouble when accessed including segfaults,
+		 * while libusb won't transparently handle their flaws.
+		 *
+		 * See https://sigrok.org/bugzilla/show_bug.cgi?id=1115
+		 * and https://github.com/sigrokproject/libsigrok/pull/166
+		 * for a discussion.
+		 */
+		if (des.idVendor != SCAN_EXPECTED_VENDOR)
+			continue;
 
 		if ((ret = libusb_open(devlist[i], &hdl)) < 0)
 			continue;
@@ -214,7 +226,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			sr_dbg("Failed to add device: %d.", ret);
 		}
 	}
-
 	libusb_free_device_list(devlist, 1);
 	g_slist_free_full(conn_devices, (GDestroyNotify)sr_usb_dev_inst_free);
 

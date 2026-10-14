@@ -163,7 +163,7 @@ static int init(struct sr_input *in, GHashTable *options)
 
 	/* Calculate the desired timestamp scaling factor. */
 	inc->samplerate = 1000000 *
-		g_variant_get_uint32(g_hash_table_lookup(options, "samplerate"));
+		g_variant_get_uint64(g_hash_table_lookup(options, "samplerate"));
 
 	inc->timestamp_scale = ((1 / TIMESTAMP_RESOLUTION) / (double)inc->samplerate);
 
@@ -213,13 +213,13 @@ static int process_header(GString *buf, struct context *inc)
 
 	/*
 	 * First-level file header:
-	 * 0x00-1F  file format name
-	 * 0x20 u64 trigger timestamp
-	 * 0x28-2F  unused
-	 * 0x30 u8  compression
-	 * 0x31-35 ??
-	 *  0x32 u8 0x00 (PI), 0x01 (iprobe)
-	 * 0x36 u8  device id: 0x08 (PI 250/500), 0x0A (iprobe 250)
+	 * 000-031  0x00-1F  file format name
+	 * 032      0x20 u64 trigger timestamp
+	 * 040-047  0x28-2F  unused
+	 * 048      0x30 u8  compression
+	 * 049-053  0x31-35 ??
+	 *  050     0x32 u8 0x00 (PI), 0x01 (iprobe)
+	 * 054      0x36 u8  device id: 0x08 (PI 250/500), 0x0A (iprobe 250)
 	 */
 
 	/*
@@ -891,7 +891,7 @@ static const struct sr_option *get_options(void)
 		options[9].def = g_variant_ref_sink(g_variant_new_boolean(FALSE));
 		options[10].def = g_variant_ref_sink(g_variant_new_boolean(FALSE));
 		options[11].def = g_variant_ref_sink(g_variant_new_boolean(FALSE));
-		options[12].def = g_variant_ref_sink(g_variant_new_uint32(DEFAULT_SAMPLERATE));
+		options[12].def = g_variant_ref_sink(g_variant_new_uint64(DEFAULT_SAMPLERATE));
 	}
 
 	return options;

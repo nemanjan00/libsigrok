@@ -43,18 +43,21 @@
  * TODO Verify the identification of models that were not tested before.
  */
 static const struct kingst_model models[] = {
-	{  2, 1, "LA2016", "la2016a1", SR_MHZ(200), 16, 1, 0, },
-	{  2, 0, "LA2016", "la2016",   SR_MHZ(200), 16, 1, 0, },
-	{  3, 1, "LA1016", "la1016a1", SR_MHZ(100), 16, 1, 0, },
-	{  3, 0, "LA1016", "la1016",   SR_MHZ(100), 16, 1, 0, },
-	{  4, 0, "LA1010", "la1010a0", SR_MHZ(100), 16, 0, SR_MHZ(800), },
-	{  5, 0, "LA5016", "la5016a1", SR_MHZ(500), 16, 2, SR_MHZ(800), },
-	{  6, 0, "LA5032", "la5032a0", SR_MHZ(500), 32, 4, SR_MHZ(800), },
-	{  7, 0, "LA1010", "la1010a1", SR_MHZ(100), 16, 0, SR_MHZ(800), },
-	{  8, 0, "LA2016", "la2016a1", SR_MHZ(200), 16, 1, 0, },
-	{  9, 0, "LA1016", "la1016a1", SR_MHZ(100), 16, 1, 0, },
-	{ 10, 0, "LA1010", "la1010a2", SR_MHZ(100), 16, 0, SR_MHZ(800), },
-	{ 65, 0, "LA5016", "la5016a1", SR_MHZ(500), 16, 2, SR_MHZ(800), },
+	{ 0x02, 0x01, "LA2016", "la2016a1", SR_MHZ(200), 16, 1, 0, },
+	{ 0x02, 0x00, "LA2016", "la2016",   SR_MHZ(200), 16, 1, 0, },
+	{ 0x03, 0x01, "LA1016", "la1016a1", SR_MHZ(100), 16, 1, 0, },
+	{ 0x03, 0x00, "LA1016", "la1016",   SR_MHZ(100), 16, 1, 0, },
+	{ 0x04, 0x00, "LA1010", "la1010a0", SR_MHZ(100), 16, 0, SR_MHZ(800), },
+	{ 0x05, 0x00, "LA5016", "la5016a1", SR_MHZ(500), 16, 2, SR_MHZ(800), },
+	{ 0x06, 0x00, "LA5032", "la5032a0", SR_MHZ(500), 32, 4, SR_MHZ(800), },
+	{ 0x07, 0x00, "LA1010", "la1010a1", SR_MHZ(100), 16, 0, SR_MHZ(800), },
+	{ 0x08, 0x00, "LA2016", "la2016a1", SR_MHZ(200), 16, 1, 0, },
+	{ 0x09, 0x00, "LA1016", "la1016a1", SR_MHZ(100), 16, 1, 0, },
+	{ 0x0a, 0x00, "LA1010", "la1010a2", SR_MHZ(100), 16, 0, SR_MHZ(800), },
+	{ 0x0b, 0x10, "LA2016", "la2016a2", SR_MHZ(200), 16, 1, 0, },
+	{ 0x0c, 0x10, "LA5016", "la5016a2", SR_MHZ(500), 16, 2, SR_MHZ(800), },
+	{ 0x0c, 0x00, "LA5016", "la5016a2", SR_MHZ(500), 16, 2, SR_MHZ(800), },
+	{ 0x41, 0x00, "LA5016", "la5016a1", SR_MHZ(500), 16, 2, SR_MHZ(800), },
 };
 
 /* USB vendor class control requests, executed by the Cypress FX2 MCU. */
@@ -1281,7 +1284,7 @@ static int la2016_start_download(const struct sr_dev_inst *sdi)
 	devc->n_transfer_packets_to_read = devc->info.n_rep_packets;
 	devc->n_transfer_packets_to_read /= devc->packets_per_chunk;
 	devc->n_bytes_to_read = devc->n_transfer_packets_to_read;
-	devc->n_bytes_to_read *= TRANSFER_PACKET_LENGTH;
+	devc->n_bytes_to_read *= devc->transfer_size;
 	devc->read_pos = devc->info.write_pos - devc->n_bytes_to_read;
 	devc->n_reps_until_trigger = devc->info.n_rep_packets_before_trigger;
 
@@ -1320,15 +1323,31 @@ static int la2016_start_download(const struct sr_dev_inst *sdi)
 }
 
 /*
- * A chunk (received via USB) contains a number of transfers (USB length
- * divided by 16) which contain a number of packets (5 per transfer) which
- * contain a number of samples (8bit repeat count per 16bit sample data).
+ * A chunk of sample memory was received via USB. These chunks contain
+ * transfers of 16 or 32 bytes each (model dependent size and layout).
+ * Transfers contain a number of packets (5 or 6 per transfer), which
+ * contain a number of samples (16 or 32 sampled pin values, and an
+ * 8bit repeat count for these sampled pin values). A sequence number
+ * follows the packets within the transfer, allows to detect missing or
+ * out of order reception.
+ *
+ * Memory layout for 16-channel models:
+ * - 16 bytes per transfer
+ * - 5x (u16 pins, and u8 count)
+ * - 1x u8 sequence number
+ *
+ * Memory layout for 32-channel models:
+ * - 32 bytes per transfer
+ * - 6x (u32 pins, and u8 count)
+ * - 2x u8 sequence number (inverted, and normal)
+ *
+ * This implementation silently ignores the (weak) sequence number.
  */
 static void send_chunk(struct sr_dev_inst *sdi,
 	const uint8_t *data_buffer, size_t data_length)
 {
 	struct dev_context *devc;
-	size_t num_xfers, num_pkts;
+	size_t num_xfers, num_pkts, num_seqs;
 	const uint8_t *rp;
 	uint32_t sample_value;
 	size_t repetitions;
@@ -1358,12 +1377,11 @@ static void send_chunk(struct sr_dev_inst *sdi,
 	/* Process the received chunk of capture data. */
 	sample_value = 0;
 	rp = data_buffer;
-	num_xfers = data_length / TRANSFER_PACKET_LENGTH;
+	num_xfers = data_length / devc->transfer_size;
 	while (num_xfers--) {
 		num_pkts = devc->packets_per_chunk;
 		while (num_pkts--) {
 
-			/* TODO Verify 32channel layout. */
 			if (devc->model->channel_count == 32)
 				sample_value = read_u32le_inc(&rp);
 			else if (devc->model->channel_count == 16)
@@ -1373,7 +1391,7 @@ static void send_chunk(struct sr_dev_inst *sdi,
 			devc->total_samples += repetitions;
 
 			write_u32le(sample_buff, sample_value);
-			feed_queue_logic_submit(devc->feed_queue,
+			feed_queue_logic_submit_one(devc->feed_queue,
 				sample_buff, repetitions);
 			sr_sw_limits_update_samples_read(&devc->sw_limits,
 				repetitions);
@@ -1388,7 +1406,10 @@ static void send_chunk(struct sr_dev_inst *sdi,
 				}
 			}
 		}
-		(void)read_u8_inc(&rp); /* Skip sequence number. */
+		/* Skip the sequence number bytes. */
+		num_seqs = devc->sequence_size;
+		while (num_seqs--)
+			(void)read_u8_inc(&rp);
 	}
 
 	/*
@@ -1420,21 +1441,22 @@ static void send_chunk(struct sr_dev_inst *sdi,
  * above). In streaming mode data is not compressed, and memory cells
  * neither contain raw sampled pin values at a given point in time. The
  * memory content needs transformation.
- * - The memory content can be seen as a sequence of memory cells.
- * - Each cell contains samples that correspond to the same channel.
- *   The next cell contains samples for the next channel, etc.
- * - Only enabled channels occupy memory cells. Disabled channels are
- *   not part of the capture data memory layout.
- * - The LSB bit position in a cell is the sample which was taken first
- *   for this channel. Upper bit positions were taken later.
+ *
+ * All enabled channels get iterated over. Disabled channels will not
+ * occupy space in the streamed sample data. Per channel chunk there is
+ * one 16bit entity which carries samples that were taken at different
+ * times. The least significant bit was sampled first, higher bits were
+ * sampled later. After all 16bit entities for all enabled channels
+ * were seen, the first enabled channel's next chunk follows.
  *
  * Implementor's note: This routine is inspired by convert_sample_data()
  * in the https://github.com/AlexUg/sigrok implementation. Which in turn
  * appears to have been derived from the saleae-logic16 sigrok driver.
  * The code is phrased conservatively to verify the layout as discussed
  * above, performance was not a priority. Operation was verified with an
- * LA2016 device. The memory layout of 32 channel models is yet to get
- * determined.
+ * LA2016 device. The LA5032 reportedly shares the 16 samples per channel
+ * layout, just round-robins through a potentially larger set of enabled
+ * channels before returning to the first of the channels.
  */
 static void stream_data(struct sr_dev_inst *sdi,
 	const uint8_t *data_buffer, size_t data_length)
@@ -1459,30 +1481,15 @@ static void stream_data(struct sr_dev_inst *sdi,
 
 	/* TODO Add soft trigger support when in stream mode? */
 
-	/*
-	 * TODO Are memory cells always as wide as the channel count?
-	 * Are they always 16bits wide? Verify for 32 channel devices.
-	 */
-	bit_count = devc->model->channel_count;
-	if (bit_count == 32) {
-		data_length /= sizeof(uint32_t);
-	} else if (bit_count == 16) {
-		data_length /= sizeof(uint16_t);
-	} else {
-		/*
-		 * Unhandled case. Acquisition should not start.
-		 * The statement silences the compiler.
-		 */
-		return;
-	}
+	/* All channels' chunks carry 16 samples for one channel. */
+	bit_count = 16;
+	data_length /= sizeof(uint16_t);
+
 	rp = data_buffer;
 	sample_value = 0;
 	while (data_length--) {
 		/* Get another entity. */
-		if (bit_count == 32)
-			sample_value = read_u32le_inc(&rp);
-		else if (bit_count == 16)
-			sample_value = read_u16le_inc(&rp);
+		sample_value = read_u16le_inc(&rp);
 
 		/* Map the entity's bits to a channel's samples. */
 		ch_mask = stream->channel_masks[stream->channel_index];
@@ -1501,7 +1508,8 @@ static void stream_data(struct sr_dev_inst *sdi,
 		for (bit_idx = 0; bit_idx < bit_count; bit_idx++) {
 			sample_value = stream->sample_data[bit_idx];
 			write_u32le(sample_buff, sample_value);
-			feed_queue_logic_submit(devc->feed_queue, sample_buff, 1);
+			feed_queue_logic_submit_one(devc->feed_queue,
+				sample_buff, 1);
 		}
 		sr_sw_limits_update_samples_read(&devc->sw_limits, bit_count);
 		devc->total_samples += bit_count;
@@ -1809,20 +1817,20 @@ SR_PRIV int la2016_identify_device(const struct sr_dev_inst *sdi,
 		/* Primary copy of magic passes complement check (4 bytes). */
 		magic = buf[0];
 		magic2 = buf[2];
-		sr_dbg("Using primary magic %hhu (%hhu).", magic, magic2);
+		sr_dbg("Using primary magic 0x%hhx (0x%hhx).", magic, magic2);
 	} else if ((buf[4] ^ buf[5]) == 0xff && (buf[6] ^ buf[7]) == 0xff) {
 		/* Backup copy of magic passes complement check (4 bytes). */
 		magic = buf[4];
 		magic2 = buf[6];
-		sr_dbg("Using secondary magic %hhu (%hhu).", magic, magic2);
+		sr_dbg("Using secondary magic 0x%hhx (0x%hhx).", magic, magic2);
 	} else if ((buf[0] ^ buf[1]) == 0xff) {
 		/* Primary copy of magic passes complement check (2 bytes). */
 		magic = buf[0];
-		sr_dbg("Using primary magic %hhu.", magic);
+		sr_dbg("Using primary magic 0x%hhx.", magic);
 	} else if ((buf[4] ^ buf[5]) == 0xff) {
 		/* Backup copy of magic passes complement check (2 bytes). */
 		magic = buf[4];
-		sr_dbg("Using secondary magic %hhu.", magic);
+		sr_dbg("Using secondary magic 0x%hhx.", magic);
 	} else {
 		sr_err("Cannot find consistent device type identification.");
 	}

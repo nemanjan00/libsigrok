@@ -75,6 +75,11 @@ The following drivers/devices require a firmware upload upon connection:
 
      http://sigrok.org/wiki/LeCroy_LogicStudio#Firmware
 
+ - raspberrypi-pico: In order to use a Raspberry Pi Pico as a logic analyzer,
+   it must be flashed with special open-source firmware:
+
+     https://github.com/pico-coder/sigrok-pico
+
  - saleae-logic16: The Saleae Logic16 needs a firmware file for the
    Cypress FX2 chip in the device, as well as two FPGA bitstream files.
    These can be extracted from the vendor's Linux application using a tool
@@ -201,7 +206,7 @@ Formal syntax for serial communication:
    path may contain slashes
    path and serno are "greedy" (span to the end of the spec)
  - Bluetooth Classic and Bluetooth Low Energy (BLE):
-   conn=bt/<conn>/<addr>
+   conn=bt/<conn>/<addr>[/param=value]
    conn can be: rfcomm, ble122, nrf51, cc254x
    addr can be "dense" or separated, bt/cc254x/0123456789ab or
      bt/rfcomm/11-22-33-44-55-66 or bt/ble122/88:6b:12:34:56:78
@@ -209,6 +214,8 @@ Formal syntax for serial communication:
      from a string that separates fields by colon, e.g. in the "--driver
      <name>:conn=<spec>" example, that is why the dense form and the use
      of dashes for separation are supported)
+   additional parameter keywords can be: channel, handle_rx, handle_tx,
+     handle_cccd, value_cccd, mtu
 
 Some of the drivers implement a default for the connection. Some of the
 drivers can auto-detect USB connected devices.
@@ -281,7 +288,7 @@ files should already be installed in /usr/lib/udev/rules.d/, i.e.
 61-libsigrok-uaccess.rules is encouraged on systemd distributions.
 
 The access policy can be locally overridden by placing appropriate rules in
-/etc/udev/rules.d/, disabling or ammending the default policy. See the
+/etc/udev/rules.d/, disabling or amending the default policy. See the
 udev documentation, e.g. man 7 udev, for details.
 
 If you're building from source, you need to copy the file to the place

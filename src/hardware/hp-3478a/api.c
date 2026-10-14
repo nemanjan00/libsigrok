@@ -71,21 +71,21 @@ static const struct {
 	{SR_MQ_VOLTAGE, SR_MQFLAG_AC,               2,   "300V"},
 	/* -99 is a dummy exponent for auto ranging. */
 	{SR_MQ_CURRENT, SR_MQFLAG_DC,             -99,   "Auto"},
-	{SR_MQ_CURRENT, SR_MQFLAG_DC,              -1,   "300mV"},
-	{SR_MQ_CURRENT, SR_MQFLAG_DC,               0,   "3V"},
+	{SR_MQ_CURRENT, SR_MQFLAG_DC,              -1,   "300mA"},
+	{SR_MQ_CURRENT, SR_MQFLAG_DC,               0,   "3A"},
 	/* -99 is a dummy exponent for auto ranging. */
 	{SR_MQ_CURRENT, SR_MQFLAG_AC,             -99,   "Auto"},
-	{SR_MQ_CURRENT, SR_MQFLAG_AC,              -1,   "300mV"},
-	{SR_MQ_CURRENT, SR_MQFLAG_AC,               0,   "3V"},
+	{SR_MQ_CURRENT, SR_MQFLAG_AC,              -1,   "300mA"},
+	{SR_MQ_CURRENT, SR_MQFLAG_AC,               0,   "3A"},
 	/* -99 is a dummy exponent for auto ranging. */
 	{SR_MQ_RESISTANCE, 0,                     -99,   "Auto"},
-	{SR_MQ_RESISTANCE, 0,                       1,   "30"},
-	{SR_MQ_RESISTANCE, 0,                       2,   "300"},
-	{SR_MQ_RESISTANCE, 0,                       3,   "3k"},
-	{SR_MQ_RESISTANCE, 0,                       4,   "30k"},
-	{SR_MQ_RESISTANCE, 0,                       5,   "300k"},
-	{SR_MQ_RESISTANCE, 0,                       6,   "3M"},
-	{SR_MQ_RESISTANCE, 0,                       7,   "30M"},
+	{SR_MQ_RESISTANCE, 0,                       1,   "30R"},
+	{SR_MQ_RESISTANCE, 0,                       2,   "300R"},
+	{SR_MQ_RESISTANCE, 0,                       3,   "3kR"},
+	{SR_MQ_RESISTANCE, 0,                       4,   "30kR"},
+	{SR_MQ_RESISTANCE, 0,                       5,   "300kR"},
+	{SR_MQ_RESISTANCE, 0,                       6,   "3MR"},
+	{SR_MQ_RESISTANCE, 0,                       7,   "30MR"},
 	/* -99 is a dummy exponent for auto ranging. */
 	{SR_MQ_RESISTANCE, SR_MQFLAG_FOUR_WIRE,   -99,   "Auto"},
 	{SR_MQ_RESISTANCE, SR_MQFLAG_FOUR_WIRE,     1,   "30R"},
@@ -102,7 +102,7 @@ static const char *digits[] = {
 	"3.5", "4.5", "5.5",
 };
 
-/** Mapping between devc->spec_digits and digits string. */
+/** Mapping between devc->digits and digits string. */
 static const char *digits_map[] = {
 	"", "", "", "", "3.5", "4.5", "5.5",
 };
@@ -192,7 +192,9 @@ static int config_get(uint32_t key, GVariant **data,
 
 	(void)cg;
 
-	devc = sdi ? sdi->priv : NULL;
+	if (!sdi)
+		return SR_ERR_ARG;
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_LIMIT_SAMPLES:
@@ -225,7 +227,7 @@ static int config_get(uint32_t key, GVariant **data,
 		ret = hp_3478a_get_status_bytes(sdi);
 		if (ret != SR_OK)
 			return ret;
-		*data = g_variant_new_string(digits_map[devc->spec_digits]);
+		*data = g_variant_new_string(digits_map[devc->digits]);
 		break;
 	default:
 		return SR_ERR_NA;
@@ -247,7 +249,9 @@ static int config_set(uint32_t key, GVariant *data,
 
 	(void)cg;
 
-	devc = sdi ? sdi->priv : NULL;
+	if (!sdi)
+		return SR_ERR_ARG;
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_LIMIT_SAMPLES:
@@ -294,7 +298,11 @@ static int config_list(uint32_t key, GVariant **data,
 	GVariant *gvar, *arr[2];
 	GVariantBuilder gvb;
 
-	devc = sdi ? sdi->priv : NULL;
+	/* Only handle standard keys when no device instance is given. */
+	if (!sdi)
+		return STD_CONFIG_LIST(key, data, sdi, cg, scanopts, drvopts, devopts);
+
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_SCAN_OPTIONS:

@@ -36,6 +36,7 @@
 
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
+	SR_CONF_PROBE_NAMES,
 };
 
 static const uint32_t drvopts[] = {
@@ -197,15 +198,21 @@ static void kingst_la2016_free_devc(struct dev_context *devc)
 /* Convenience. Release an allocated sdi from error paths. */
 static void kingst_la2016_free_sdi(struct sr_dev_inst *sdi)
 {
+	struct sr_usb_dev_inst *usb;
+	struct dev_context *devc;
+
 	if (!sdi)
 		return;
-	g_free(sdi->vendor);
-	g_free(sdi->model);
-	g_free(sdi->version);
-	g_free(sdi->serial_num);
-	g_free(sdi->connection_id);
-	sr_usb_dev_inst_free(sdi->conn);
-	kingst_la2016_free_devc(sdi->priv);
+
+	usb = sdi->conn;
+	if (usb && usb->devhdl)
+		sr_usb_close(usb);
+	sr_usb_dev_inst_free(usb);
+
+	devc = sdi->priv;
+	kingst_la2016_free_devc(devc);
+
+	sr_dev_inst_free(sdi);
 }
 
 /* Convenience. Open a USB device (including claiming an interface). */
@@ -430,6 +437,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	uint8_t bus, addr;
 	uint16_t pid;
 	const char *conn;
+	const char *probe_names;
 	char conn_id[64];
 	int ret;
 	size_t ch_off, ch_max;
@@ -441,11 +449,15 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	conn = NULL;
 	conn_devices = NULL;
+	probe_names = NULL;
 	for (l = options; l; l = l->next) {
 		src = l->data;
 		switch (src->key) {
 		case SR_CONF_CONN:
 			conn = g_variant_get_string(src->data, NULL);
+			break;
+		case SR_CONF_PROBE_NAMES:
+			probe_names = g_variant_get_string(src->data, NULL);
 			break;
 		}
 	}
@@ -595,12 +607,14 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		ch_max = ARRAY_SIZE(channel_names_logic);
 		if (ch_max > devc->model->channel_count)
 			ch_max = devc->model->channel_count;
+		devc->channel_names_logic = sr_parse_probe_names(probe_names,
+			channel_names_logic, ch_max, ch_max, &ch_max);
 		cg = sr_channel_group_new(sdi, "Logic", NULL);
 		devc->cg_logic = cg;
 		for (ch_idx = 0; ch_idx < ch_max; ch_idx++) {
 			ch = sr_channel_new(sdi, ch_off,
 				SR_CHANNEL_LOGIC, TRUE,
-				channel_names_logic[ch_idx]);
+				devc->channel_names_logic[ch_idx]);
 			ch_off++;
 			cg->channels = g_slist_append(cg->channels, ch);
 		}
@@ -1027,7 +1041,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	struct drv_context *drvc;
 	struct sr_context *ctx;
 	struct dev_context *devc;
-	size_t unitsize;
+	size_t unitsize, xfersize, repsize, seqsize;
 	double voltage;
 	int ret;
 
@@ -1037,21 +1051,35 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	devc = sdi->priv;
 
 	if (!devc->feed_queue) {
-		if (devc->model->channel_count == 32)
+		/*
+		 * TODO
+		 * Move this into protocol.c which concentrates the
+		 * wire format. The api.c source should not bother.
+		 */
+		if (devc->model->channel_count == 32) {
 			unitsize = sizeof(uint32_t);
-		else if (devc->model->channel_count == 16)
+			repsize = sizeof(uint8_t);
+			seqsize = 2 * sizeof(uint8_t);
+			xfersize = 32;
+		} else if (devc->model->channel_count == 16) {
 			unitsize = sizeof(uint16_t);
-		else
+			repsize = sizeof(uint8_t);
+			seqsize = 1 * sizeof(uint8_t);
+			xfersize = 16;
+		} else {
 			return SR_ERR_ARG;
+		}
 		devc->feed_queue = feed_queue_logic_alloc(sdi,
 			LA2016_CONVBUFFER_SIZE, unitsize);
 		if (!devc->feed_queue) {
 			sr_err("Cannot allocate buffer for session feed.");
 			return SR_ERR_MALLOC;
 		}
-		devc->packets_per_chunk = TRANSFER_PACKET_LENGTH;
-		devc->packets_per_chunk--;
-		devc->packets_per_chunk /= unitsize + sizeof(uint8_t);
+		devc->transfer_size = xfersize;
+		devc->sequence_size = seqsize;
+		devc->packets_per_chunk = xfersize;
+		devc->packets_per_chunk -= seqsize;
+		devc->packets_per_chunk /= unitsize + repsize;
 	}
 
 	sr_sw_limits_acquisition_start(&devc->sw_limits);

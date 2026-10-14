@@ -51,7 +51,7 @@ struct context {
 	int num_channels;
 	int unitsize;
 	gboolean found_data;
-	gboolean create_channels;
+	GSList *prev_sr_channels;
 };
 
 static int parse_wav_header(GString *buf, struct context *inc)
@@ -151,15 +151,10 @@ static int format_match(GHashTable *metadata, unsigned int *confidence)
 
 static int init(struct sr_input *in, GHashTable *options)
 {
-	struct context *inc;
-
 	(void)options;
 
 	in->sdi = g_malloc0(sizeof(struct sr_dev_inst));
 	in->priv = g_malloc0(sizeof(struct context));
-	inc = in->priv;
-
-	inc->create_channels = TRUE;
 
 	return SR_OK;
 }
@@ -306,6 +301,44 @@ static int process_buffer(struct sr_input *in)
 	return SR_OK;
 }
 
+/*
+ * Check the channel list for consistency across file re-import. See
+ * the VCD input module for more details and motivation.
+ */
+
+static void keep_header_for_reread(const struct sr_input *in)
+{
+	struct context *inc;
+
+	inc = in->priv;
+	g_slist_free_full(inc->prev_sr_channels, sr_channel_free_cb);
+	inc->prev_sr_channels = in->sdi->channels;
+	in->sdi->channels = NULL;
+}
+
+static int check_header_in_reread(const struct sr_input *in)
+{
+	struct context *inc;
+
+	if (!in)
+		return FALSE;
+	inc = in->priv;
+	if (!inc)
+		return FALSE;
+	if (!inc->prev_sr_channels)
+		return TRUE;
+
+	if (sr_channel_lists_differ(inc->prev_sr_channels, in->sdi->channels)) {
+		sr_err("Channel list change not supported for file re-read.");
+		return FALSE;
+	}
+	g_slist_free_full(in->sdi->channels, sr_channel_free_cb);
+	in->sdi->channels = inc->prev_sr_channels;
+	inc->prev_sr_channels = NULL;
+
+	return TRUE;
+}
+
 static int receive(struct sr_input *in, GString *buf)
 {
 	struct context *inc;
@@ -330,14 +363,12 @@ static int receive(struct sr_input *in, GString *buf)
 		else if (ret != SR_OK)
 			return ret;
 
-		if (inc->create_channels) {
-			for (int i = 0; i < inc->num_channels; i++) {
-				snprintf(channelname, sizeof(channelname), "CH%d", i + 1);
-				sr_channel_new(in->sdi, i, SR_CHANNEL_ANALOG, TRUE, channelname);
-			}
+		for (int i = 0; i < inc->num_channels; i++) {
+			snprintf(channelname, sizeof(channelname), "CH%d", i + 1);
+			sr_channel_new(in->sdi, i, SR_CHANNEL_ANALOG, TRUE, channelname);
 		}
-
-		inc->create_channels = FALSE;
+		if (!check_header_in_reread(in))
+			return SR_ERR_DATA;
 
 		/* sdi is ready, notify frontend. */
 		in->sdi_ready = TRUE;
@@ -368,12 +399,18 @@ static int end(struct sr_input *in)
 
 static int reset(struct sr_input *in)
 {
-	memset(in->priv, 0, sizeof(struct context));
+	struct context *inc;
+
+	inc = in->priv;
+	memset(inc, 0, sizeof(*inc));
 
 	/*
-	 * We only want to create the sigrok channels once, so
-	 * inc->create_channels won't be set to TRUE this time around.
+	 * Create, and re-create channels for every iteration of file
+	 * import. Other logic will enforce a consistent set of channels
+	 * across re-import, or an appropriate error message when file
+	 * properties should change.
 	 */
+	keep_header_for_reread(in);
 
 	g_string_truncate(in->buf, 0);
 

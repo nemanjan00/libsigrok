@@ -23,9 +23,10 @@
  *
  * Brymen BM86x serial protocol parser. The USB protocol (for the cable)
  * and the packet description (for the meter) were retrieved from:
- * http://brymen.com/product-html/Download2.html
- * http://brymen.com/product-html/PD02BM860s_protocolDL.html
- * http://brymen.com/product-html/images/DownloadList/ProtocolList/BM860-BM860s_List/BM860-BM860s-500000-count-dual-display-DMMs-protocol.pdf
+ * http://www.brymen.com/Download2.html
+ * http://www.brymen.com/PD02BM860s_protocolDL.html
+ * http://www.brymen.com/images/DownloadList/ProtocolList/BM860-BM860s_List/BM860-BM860s-500000-count-dual-display-DMMs-protocol.pdf
+ * http://web.archive.org/web/20191231053213/http://www.brymen.com/images/DownloadList/ProtocolList/BM860-BM860s_List/BM860-BM860s-500000-count-dual-display-DMMs-protocol.pdf
  */
 
 #include <config.h>
@@ -57,6 +58,22 @@ SR_PRIV gboolean sr_brymen_bm86x_packet_valid(const uint8_t *buf)
 	 * values are listed). There is nothing else we can check reliably.
 	 */
 	if (buf[19] != 0x86)
+		return FALSE;
+
+	/*
+	 * 2021-05 update: The devices that we have seen in the field do
+	 * provide four bytes which we can synchronize to. Which happens
+	 * to match the bm52x and bm82x devices' protocol. This condition
+	 * is not documented by the vendor, but improves reliability of
+	 * the re-synchronization for slight offsets, which were seen
+	 * in the field, and which would have kept failing in an earlier
+	 * implementation.
+	 */
+	if (buf[16] != 0x86)
+		return FALSE;
+	if (buf[17] != 0x86)
+		return FALSE;
+	if (buf[18] != 0x86)
 		return FALSE;
 
 	return TRUE;
@@ -286,6 +303,8 @@ static void brymen_bm86x_parse(const uint8_t *buf, float *floatval,
 			NULL, &temp_unit, NULL, 0x80);
 		ret = brymen_bm86x_parse_digits(&buf[9], 4, txtbuf,
 			floatval, NULL, &digits, 0x10);
+		if (ret != SR_OK)
+			return;
 
 		/* SI unit. */
 		if (buf[14] & 0x08) {

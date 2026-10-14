@@ -177,6 +177,33 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 	}).di
 
 SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
+	/* {{{ es519xx */
+	DMM(
+		"tenma-72-7750", es519xx,
+		/* The baudrate is actually 19230, see "Note 1" below. */
+		"Tenma", "72-7750", 19200,
+		ES519XX_11B_PACKET_SIZE,
+		sr_es519xx_19200_11b_packet_valid, sr_es519xx_19200_11b_parse,
+		NULL
+	),
+	DMM(
+		"uni-t-ut60g", es519xx,
+		/* The baudrate is actually 19230, see "Note 1" below. */
+		"UNI-T", "UT60G", 19200,
+		ES519XX_11B_PACKET_SIZE,
+		sr_es519xx_19200_11b_packet_valid, sr_es519xx_19200_11b_parse,
+		NULL
+	),
+	DMM(
+		"uni-t-ut61e", es519xx,
+		/* The baudrate is actually 19230, see "Note 1" below. */
+		"UNI-T", "UT61E", 19200,
+		ES519XX_14B_PACKET_SIZE,
+		sr_es519xx_19200_14b_packet_valid, sr_es519xx_19200_14b_parse,
+		NULL
+	),
+	/* }}} */
+	/* {{{ fs9721 */
 	DMM(
 		"tecpel-dmm-8061", fs9721,
 		"Tecpel", "DMM-8061", 2400,
@@ -185,11 +212,11 @@ SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
 		sr_fs9721_00_temp_c
 	),
 	DMM(
-		"uni-t-ut372", ut372,
-		"UNI-T", "UT372", 2400,
-		UT372_PACKET_SIZE,
-		sr_ut372_packet_valid, sr_ut372_parse,
-		NULL
+		"tenma-72-7745", fs9721,
+		"Tenma", "72-7745", 2400,
+		FS9721_PACKET_SIZE,
+		sr_fs9721_packet_valid, sr_fs9721_parse,
+		sr_fs9721_00_temp_c
 	),
 	DMM(
 		"uni-t-ut60a", fs9721,
@@ -206,13 +233,21 @@ SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
 		sr_fs9721_00_temp_c
 	),
 	DMM(
-		"uni-t-ut60g", es519xx,
-		/* The baudrate is actually 19230, see "Note 1" below. */
-		"UNI-T", "UT60G", 19200,
-		ES519XX_11B_PACKET_SIZE,
-		sr_es519xx_19200_11b_packet_valid, sr_es519xx_19200_11b_parse,
+		"voltcraft-vc820", fs9721,
+		"Voltcraft", "VC-820", 2400,
+		FS9721_PACKET_SIZE,
+		sr_fs9721_packet_valid, sr_fs9721_parse,
 		NULL
 	),
+	DMM(
+		"voltcraft-vc840", fs9721,
+		"Voltcraft", "VC-840", 2400,
+		FS9721_PACKET_SIZE,
+		sr_fs9721_packet_valid, sr_fs9721_parse,
+		sr_fs9721_00_temp_c
+	),
+	/* }}} */
+	/* {{{ fs9922 */
 	DMM(
 		"uni-t-ut61b", fs9922,
 		"UNI-T", "UT61B", 2400,
@@ -235,12 +270,45 @@ SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
 		NULL
 	),
 	DMM(
-		"uni-t-ut61e", es519xx,
-		/* The baudrate is actually 19230, see "Note 1" below. */
-		"UNI-T", "UT61E", 19200,
-		ES519XX_14B_PACKET_SIZE,
-		sr_es519xx_19200_14b_packet_valid, sr_es519xx_19200_14b_parse,
+		"voltcraft-vc830", fs9922,
+		/*
+		 * Note: The VC830 doesn't set the 'volt' and 'diode' bits of
+		 * the FS9922 protocol. Instead, it only sets the user-defined
+		 * bit "z1" to indicate "diode mode" and "voltage".
+		 */
+		"Voltcraft", "VC-830", 2400,
+		FS9922_PACKET_SIZE,
+		sr_fs9922_packet_valid, sr_fs9922_parse,
+		&sr_fs9922_z1_diode
+	),
+	/* }}} */
+	/* {{{ ut372 */
+	DMM(
+		"uni-t-ut372", ut372,
+		"UNI-T", "UT372", 2400,
+		UT372_PACKET_SIZE,
+		sr_ut372_packet_valid, sr_ut372_parse,
 		NULL
+	),
+	/* }}} */
+	/* {{{ ut71x */
+	DMM(
+		"tenma-72-7730", ut71x,
+		"Tenma", "72-7730", 2400,
+		UT71X_PACKET_SIZE,
+		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
+	),
+	DMM(
+		"tenma-72-7732", ut71x,
+		"Tenma", "72-7732", 2400,
+		UT71X_PACKET_SIZE,
+		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
+	),
+	DMM(
+		"tenma-72-9380a", ut71x,
+		"Tenma", "72-9380A", 2400,
+		UT71X_PACKET_SIZE,
+		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
 	),
 	DMM(
 		"uni-t-ut71a", ut71x,
@@ -273,37 +341,6 @@ SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
 		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
 	),
 	DMM(
-		"voltcraft-vc820", fs9721,
-		"Voltcraft", "VC-820", 2400,
-		FS9721_PACKET_SIZE,
-		sr_fs9721_packet_valid, sr_fs9721_parse,
-		NULL
-	),
-	DMM(
-		"voltcraft-vc830", fs9922,
-		/*
-		 * Note: The VC830 doesn't set the 'volt' and 'diode' bits of
-		 * the FS9922 protocol. Instead, it only sets the user-defined
-		 * bit "z1" to indicate "diode mode" and "voltage".
-		 */
-		"Voltcraft", "VC-830", 2400,
-		FS9922_PACKET_SIZE,
-		sr_fs9922_packet_valid, sr_fs9922_parse,
-		&sr_fs9922_z1_diode
-	),
-	DMM(
-		"voltcraft-vc840", fs9721,
-		"Voltcraft", "VC-840", 2400,
-		FS9721_PACKET_SIZE,
-		sr_fs9721_packet_valid, sr_fs9721_parse,
-		sr_fs9721_00_temp_c
-	),
-	DMM(
-		"voltcraft-vc870", vc870,
-		"Voltcraft", "VC-870", 9600, VC870_PACKET_SIZE,
-		sr_vc870_packet_valid, sr_vc870_parse, NULL
-	),
-	DMM(
 		"voltcraft-vc920", ut71x,
 		"Voltcraft", "VC-920", 2400, UT71X_PACKET_SIZE,
 		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
@@ -318,37 +355,12 @@ SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
 		"Voltcraft", "VC-960", 2400, UT71X_PACKET_SIZE,
 		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
 	),
+	/* }}} */
+	/* {{{ vc870 */
 	DMM(
-		"tenma-72-7730", ut71x,
-		"Tenma", "72-7730", 2400,
-		UT71X_PACKET_SIZE,
-		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
+		"voltcraft-vc870", vc870,
+		"Voltcraft", "VC-870", 9600, VC870_PACKET_SIZE,
+		sr_vc870_packet_valid, sr_vc870_parse, NULL
 	),
-	DMM(
-		"tenma-72-7732", ut71x,
-		"Tenma", "72-7732", 2400,
-		UT71X_PACKET_SIZE,
-		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
-	),
-	DMM(
-		"tenma-72-9380a", ut71x,
-		"Tenma", "72-9380A", 2400,
-		UT71X_PACKET_SIZE,
-		sr_ut71x_packet_valid, sr_ut71x_parse, NULL
-	),
-	DMM(
-		"tenma-72-7745", fs9721,
-		"Tenma", "72-7745", 2400,
-		FS9721_PACKET_SIZE,
-		sr_fs9721_packet_valid, sr_fs9721_parse,
-		sr_fs9721_00_temp_c
-	),
-	DMM(
-		"tenma-72-7750", es519xx,
-		/* The baudrate is actually 19230, see "Note 1" below. */
-		"Tenma", "72-7750", 19200,
-		ES519XX_11B_PACKET_SIZE,
-		sr_es519xx_19200_11b_packet_valid, sr_es519xx_19200_11b_parse,
-		NULL
-	),
+	/* }}} */
 );

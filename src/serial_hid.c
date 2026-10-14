@@ -181,9 +181,10 @@ static char *extract_hidapi_path(const char *copy)
 }
 
 /*
- * The HIDAPI specific list() callback, invoked by common serial.c code.
- * Enumerate all devices (no VID:PID is involved).
- * Invoke an 'append' callback with "path" and "name".
+ * Enumerate all devices (no VID:PID is involved). Invoke an 'append'
+ * callback with "path" and "name". Exclusively list connections that
+ * involve supported chip types, because mice and keyboards etc are not
+ * too useful to communicate to measurement equipment.
  */
 static GSList *ser_hid_hidapi_list(GSList *list, sr_ser_list_append_t append)
 {
@@ -197,14 +198,14 @@ static GSList *ser_hid_hidapi_list(GSList *list, sr_ser_list_append_t append)
 	devs = hid_enumerate(0x0000, 0x0000);
 	for (curdev = devs; curdev; curdev = curdev->next) {
 		/*
-		 * Determine the chip name from VID:PID (if it's one of
-		 * the supported types with an ID known to us).
+		 * Determine the chip name from VID:PID. Exlusively list
+		 * supported connection types (known chips).
 		 */
 		vid = curdev->vendor_id;
 		pid = curdev->product_id;
 		chipname = ser_hid_chip_find_name_vid_pid(vid, pid);
 		if (!chipname)
-			chipname = "<chip>";
+			continue;
 
 		/*
 		 * Prefix port names such that open() calls with this
@@ -250,19 +251,36 @@ static GSList *ser_hid_hidapi_list(GSList *list, sr_ser_list_append_t append)
 }
 
 /*
- * The HIDAPI specific find_usb() callback, invoked by common serial.c code.
- * Enumerate devices for the specified VID:PID pair.
- * Invoke an "append" callback with 'path' for the device.
+ * Enumerate devices for the specified VID:PID pair. Invoke an "append"
+ * callback with 'path' for found devices. Exclusively finds supported
+ * chip types, skips unknown VID:PID pairs (even if caller specified).
  */
 static GSList *ser_hid_hidapi_find_usb(GSList *list, sr_ser_find_append_t append,
 		uint16_t vendor_id, uint16_t product_id)
 {
+	const char *caller_chip;
+	const char *dev_chip;
 	struct hid_device_info *devs, *curdev;
 	const char *name;
+	char *path;
+
+	caller_chip = ser_hid_chip_find_name_vid_pid(vendor_id, product_id);
 
 	devs = hid_enumerate(vendor_id, product_id);
 	for (curdev = devs; curdev; curdev = curdev->next) {
-		name = curdev->path;
+		dev_chip = caller_chip;
+		if (!dev_chip) {
+			dev_chip = ser_hid_chip_find_name_vid_pid(
+				curdev->vendor_id, curdev->product_id);
+		}
+		if (!dev_chip)
+			continue;
+		path = get_hidapi_path_copy(curdev->path);
+		if (!path)
+			continue;
+		name = g_strdup_printf("%s/%s/%s",
+			SER_HID_CONN_PREFIX, dev_chip, path);
+		g_free(path);
 		list = append(list, name);
 	}
 	hid_free_enumeration(devs);
@@ -1025,6 +1043,7 @@ static int ser_hid_chip_search(enum ser_hid_chip_t *chip_ref,
 			return SR_ERR_NA;
 		have_chip = 1;
 	}
+	(void)have_chip;
 
 	if (chip_ref)
 		*chip_ref = chip;

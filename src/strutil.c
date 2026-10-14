@@ -174,7 +174,7 @@ SR_PRIV int sr_atoul_base(const char *str, unsigned long *ret, char **end, int b
 	/* Add "0b" prefix support which strtol(3) may be missing. */
 	while (str && isspace(*str))
 		str++;
-	if (!base && strncmp(str, "0b", strlen("0b")) == 0) {
+	if ((!base || base == 2) && strncmp(str, "0b", strlen("0b")) == 0) {
 		str += strlen("0b");
 		base = 2;
 	}
@@ -340,59 +340,17 @@ SR_PRIV int sr_atod_ascii(const char *str, double *ret)
  */
 SR_PRIV int sr_atod_ascii_digits(const char *str, double *ret, int *digits)
 {
-	const char *p;
-	int *dig_ref, m_dig, exp;
-	char c;
+	int d;
 	double f;
 
-	/*
-	 * Convert floating point text to the number value, _and_ get
-	 * the value's precision in the process. Steps taken to do it:
-	 * - Skip leading whitespace.
-	 * - Count the number of decimals after the mantissa's period.
-	 * - Get the exponent's signed value.
-	 *
-	 * This implementation still uses common code for the actual
-	 * conversion, but "violates API layers" by duplicating the
-	 * text scan, to get the number of significant digits.
-	 */
-	p = str;
-	while (*p && isspace(*p))
-		p++;
-	if (*p == '-' || *p == '+')
-		p++;
-	m_dig = 0;
-	exp = 0;
-	dig_ref = NULL;
-	while (*p) {
-		c = *p++;
-		if (toupper(c) == 'E') {
-			exp = strtol(p, NULL, 10);
-			break;
-		}
-		if (c == '.') {
-			m_dig = 0;
-			dig_ref = &m_dig;
-			continue;
-		}
-		if (isdigit(c)) {
-			if (dig_ref)
-				(*dig_ref)++;
-			continue;
-		}
-		/* Need not warn, conversion will fail. */
-		break;
-	}
-	sr_spew("atod digits: txt \"%s\" -> m %d, e %d -> digits %d",
-		str, m_dig, exp, m_dig + -exp);
-	m_dig += -exp;
-
-	if (sr_atod_ascii(str, &f) != SR_OK)
+	if (sr_count_digits(str, &d) != SR_OK || sr_atod_ascii(str, &f) != SR_OK)
 		return SR_ERR;
+
 	if (ret)
 		*ret = f;
+
 	if (digits)
-		*digits = m_dig;
+		*digits = d;
 
 	return SR_OK;
 }
@@ -436,6 +394,100 @@ SR_PRIV int sr_atof_ascii(const char *str, float *ret)
 	*/
 
 	*ret = (float) tmp;
+	return SR_OK;
+}
+
+/**
+ * Convert text to a floating point value, and get its precision.
+ *
+ * @param[in] str The input text to convert.
+ * @param[out] ret The conversion result, a double precision float number.
+ * @param[out] digits The number of significant decimals.
+ *
+ * @returns SR_OK in case of successful text to number conversion.
+ * @returns SR_ERR when conversion fails.
+ */
+SR_PRIV int sr_atof_ascii_digits(const char *str, float *ret, int *digits)
+{
+	int d;
+	float f;
+
+	if (sr_count_digits(str, &d) != SR_OK || sr_atof_ascii(str, &f) != SR_OK)
+		return SR_ERR;
+
+	if (ret)
+		*ret = f;
+
+	if (digits)
+		*digits = d;
+
+	return SR_OK;
+}
+
+/**
+ * Get the precision of a floating point number.
+ *
+ * @param[in] str The input text to convert.
+ * @param[out] digits The number of significant decimals.
+ *
+ * @returns SR_OK in case of successful.
+ * @returns SR_ERR when conversion fails.
+ *
+ * @private
+ */
+SR_PRIV int sr_count_digits(const char *str, int *digits)
+{
+	const char *p = str;
+	char *exp_end;
+	int d_int = 0;
+	int d_dec = 0;
+	int exp = 0;
+
+	/* Skip leading spaces */
+	while ((*p) && isspace(*p))
+		p++;
+
+	/* Skip the integer part */
+	if ((*p == '-') || (*p == '+'))
+		p++;
+	while (isdigit(*p)) {
+		d_int++;
+		p++;
+	}
+
+	/* Count decimal digits. */
+	if (*p == '.') {
+		p++;
+		while (isdigit(*p)) {
+			p++;
+			d_dec++;
+		}
+	}
+
+	/* Parse the exponent */
+	if (toupper(*p) == 'E') {
+		p++;
+		errno = 0;
+		exp = strtol(p, &exp_end, 10);
+		if (errno) {
+			sr_spew("Failed to parse exponent: txt \"%s\", e \"%s\"",
+				str, p);
+			return SR_ERR;
+		}
+		p = exp_end;
+	}
+
+	sr_spew("count digits: txt \"%s\" -> d_int %d, d_dec %d, e %d "
+		"-> digits %d\n",
+		str, d_int, d_dec, exp, d_dec - exp);
+
+	/* We should have parsed the whole string by now. Return an
+	 * error if not. */
+	if ((*p) || (d_dec == 0 && d_int == 0)) {
+		return SR_ERR;
+	}
+
+	*digits = d_dec - exp;
 	return SR_OK;
 }
 
@@ -788,9 +840,16 @@ SR_PRIV GString *sr_hexdump_new(const uint8_t *data, const size_t len)
 	GString *s;
 	size_t i;
 
-	s = g_string_sized_new(3 * len);
+	i = 3 * len;
+	i += len / 8;
+	i += len / 16;
+	s = g_string_sized_new(i);
 	for (i = 0; i < len; i++) {
 		if (i)
+			g_string_append_c(s, ' ');
+		if (i && (i % 8) == 0)
+			g_string_append_c(s, ' ');
+		if (i && (i % 16) == 0)
 			g_string_append_c(s, ' ');
 		g_string_append_printf(s, "%02x", data[i]);
 	}
@@ -828,78 +887,149 @@ SR_PRIV void sr_hexdump_free(GString *s)
  */
 SR_API int sr_parse_rational(const char *str, struct sr_rational *ret)
 {
-	char *endptr = NULL;
+	const char *readptr;
+	char *endptr;
+	gboolean is_negative, empty_integral, empty_fractional, exp_negative;
 	int64_t integral;
-	int64_t fractional = 0;
-	int64_t denominator = 1;
-	int32_t fractional_len = 0;
-	int32_t exponent = 0;
-	gboolean is_negative = FALSE;
-	gboolean no_integer, no_fractional;
+	int64_t fractional;
+	int64_t denominator;
+	uint32_t fractional_len;
+	int32_t exponent;
 
-	while (isspace(*str))
-		str++;
+	/*
+	 * Implementor's note: This routine tries hard to avoid calling
+	 * glib's or the platform's conversion routines with input that
+	 * cannot get converted *at all* (see bug #1093). It also takes
+	 * care to return with non-zero errno values for any failed
+	 * conversion attempt. It's assumed that correctness and robustness
+	 * are more important than performance, which is why code paths
+	 * are not optimized at all. Maintainability took priority.
+	 */
 
-	errno = 0;
-	integral = g_ascii_strtoll(str, &endptr, 10);
+	readptr = str;
 
-	if (str == endptr && (str[0] == '-' || str[0] == '+') && str[1] == '.') {
-		endptr += 1;
-		no_integer = TRUE;
-	} else if (str == endptr && str[0] == '.') {
-		no_integer = TRUE;
-	} else if (errno) {
-		return SR_ERR;
-	} else {
-		no_integer = FALSE;
-	}
+	/* Skip leading whitespace. */
+	while (isspace(*readptr))
+		readptr++;
 
-	if (integral < 0 || str[0] == '-')
+	/* Determine the sign, default to non-negative. */
+	is_negative = FALSE;
+	if (*readptr == '-') {
 		is_negative = TRUE;
+		readptr++;
+	} else if (*readptr == '+') {
+		is_negative = FALSE;
+		readptr++;
+	}
 
+	/* Get the (optional) integral part. */
+	empty_integral = TRUE;
+	integral = 0;
+	endptr = (char *)readptr;
 	errno = 0;
-	if (*endptr == '.') {
-		gboolean is_exp, is_eos;
-		const char *start = endptr + 1;
-		fractional = g_ascii_strtoll(start, &endptr, 10);
-		is_exp = *endptr == 'E' || *endptr == 'e';
-		is_eos = *endptr == '\0';
-		if (endptr == start && (is_exp || is_eos)) {
-			fractional = 0;
-			errno = 0;
+	if (isdigit(*readptr)) {
+		empty_integral = FALSE;
+		integral = g_ascii_strtoll(readptr, &endptr, 10);
+		if (errno)
+			return SR_ERR;
+		if (endptr == str) {
+			errno = -EINVAL;
+			return SR_ERR;
 		}
-		if (errno)
-			return SR_ERR;
-		no_fractional = endptr == start;
-		if (no_integer && no_fractional)
-			return SR_ERR;
-		fractional_len = endptr - start;
+		readptr = endptr;
 	}
 
-	errno = 0;
-	if ((*endptr == 'E') || (*endptr == 'e')) {
-		exponent = g_ascii_strtoll(endptr + 1, &endptr, 10);
-		if (errno)
-			return SR_ERR;
+	/* Get the optional fractional part. */
+	empty_fractional = TRUE;
+	fractional = 0;
+	fractional_len = 0;
+	if (*readptr == '.') {
+		readptr++;
+		endptr++;
+		errno = 0;
+		if (isdigit(*readptr)) {
+			empty_fractional = FALSE;
+			fractional = g_ascii_strtoll(readptr, &endptr, 10);
+			if (errno)
+				return SR_ERR;
+			if (endptr == readptr) {
+				errno = -EINVAL;
+				return SR_ERR;
+			}
+			fractional_len = endptr - readptr;
+			readptr = endptr;
+		}
 	}
 
-	if (*endptr != '\0')
+	/* At least one of integral or fractional is required. */
+	if (empty_integral && empty_fractional) {
+		errno = -EINVAL;
 		return SR_ERR;
+	}
 
-	for (int i = 0; i < fractional_len; i++)
+	/* Get the (optional) exponent. */
+	exponent = 0;
+	if ((*readptr == 'E') || (*readptr == 'e')) {
+		readptr++;
+		endptr++;
+		exp_negative = FALSE;
+		if (*readptr == '+') {
+			exp_negative = FALSE;
+			readptr++;
+			endptr++;
+		} else if (*readptr == '-') {
+			exp_negative = TRUE;
+			readptr++;
+			endptr++;
+		}
+		if (!isdigit(*readptr)) {
+			errno = -EINVAL;
+			return SR_ERR;
+		}
+		errno = 0;
+		exponent = g_ascii_strtoll(readptr, &endptr, 10);
+		if (errno)
+			return SR_ERR;
+		if (endptr == readptr) {
+			errno = -EINVAL;
+			return SR_ERR;
+		}
+		readptr = endptr;
+		if (exp_negative)
+			exponent = -exponent;
+	}
+
+	/* Input must be exhausted. Unconverted remaining input is fatal. */
+	if (*endptr != '\0') {
+		errno = -EINVAL;
+		return SR_ERR;
+	}
+
+	/*
+	 * Apply the sign to the integral (and fractional) part(s).
+	 * Adjust exponent (decimal position) such that the above integral
+	 * and fractional parts both fit into the (new) integral part.
+	 */
+	if (is_negative)
+		integral = -integral;
+	while (fractional_len-- > 0) {
 		integral *= 10;
-	exponent -= fractional_len;
-
+		exponent--;
+	}
 	if (!is_negative)
 		integral += fractional;
 	else
 		integral -= fractional;
-
 	while (exponent > 0) {
 		integral *= 10;
 		exponent--;
 	}
 
+	/*
+	 * When significant digits remain after the decimal, scale up the
+	 * denominator such that we end up with two integer p/q numbers.
+	 */
+	denominator = 1;
 	while (exponent < 0) {
 		denominator *= 10;
 		exponent++;
@@ -1246,6 +1376,551 @@ SR_API int sr_parse_voltage(const char *voltstr, uint64_t *p, uint64_t *q)
 			return SR_ERR_ARG;
 	}
 
+	return SR_OK;
+}
+
+/**
+ * Append another text item to a NULL terminated string vector.
+ *
+ * @param[in] table The previous string vector.
+ * @param[in,out] sz The previous and the resulting vector size
+ *       (item count).
+ * @param[in] text The text string to append to the vector.
+ *       Can be #NULL.
+ *
+ * @returns The new vector, its location can differ from 'table'.
+ *       Or #NULL in case of failure.
+ *
+ * This implementation happens to work for the first invocation when
+ * 'table' is #NULL and 'sz' is 0, as well as subsequent append calls.
+ * The 'text' can be #NULL or can be a non-empty string. When 'sz' is
+ * not provided, then the 'table' must be a NULL terminated vector,
+ * so that the routine can auto-determine the vector's current length.
+ *
+ * This routine re-allocates the vector as needed. Callers must not
+ * rely on the memory address to remain the same across calls.
+ */
+static char **append_probe_name(char **table, size_t *sz, const char *text)
+{
+	size_t curr_size, alloc_size;
+	char **new_table;
+
+	/* Get the table's previous size (item count). */
+	if (sz)
+		curr_size = *sz;
+	else if (table)
+		curr_size = g_strv_length(table);
+	else
+		curr_size = 0;
+
+	/* Extend storage to hold one more item, and the termination. */
+	alloc_size = curr_size + (text ? 1 : 0) + 1;
+	alloc_size *= sizeof(table[0]);
+	new_table = g_realloc(table, alloc_size);
+	if (!new_table) {
+		g_strfreev(table);
+		if (sz)
+			*sz = 0;
+		return NULL;
+	}
+
+	/* Append the item, NULL terminate. */
+	if (text) {
+		new_table[curr_size] = g_strdup(text);
+		if (!new_table[curr_size]) {
+			g_strfreev(new_table);
+			if (sz)
+				*sz = 0;
+			return NULL;
+		}
+		curr_size++;
+	}
+	if (sz)
+		*sz = curr_size;
+	new_table[curr_size] = NULL;
+
+	return new_table;
+}
+
+static char **append_probe_names(char **table, size_t *sz,
+	const char **names)
+{
+	if (!names)
+		return table;
+
+	while (names[0]) {
+		table = append_probe_name(table, sz, names[0]);
+		names++;
+	}
+	return table;
+}
+
+static const struct {
+	const char *name;
+	const char **expands;
+} probe_name_aliases[] = {
+	{
+		"ac97", (const char *[]){
+			"sync", "clk",
+			"out", "in", "rst",
+			NULL,
+		},
+	},
+	{
+		"i2c", (const char *[]){
+			"scl", "sda", NULL,
+		},
+	},
+	{
+		"jtag", (const char *[]){
+			"tdi", "tdo", "tck", "tms", NULL,
+		},
+	},
+	{
+		"jtag-opt", (const char *[]){
+			"tdi", "tdo", "tck", "tms",
+			"trst", "srst", "rtck", NULL,
+		},
+	},
+	{
+		"ieee488", (const char *[]){
+			"dio1", "dio2", "dio3", "dio4",
+			"dio5", "dio6", "dio7", "dio8",
+			"eoi", "dav", "nrfd", "ndac",
+			"ifc", "srq", "atn", "ren", NULL,
+		},
+	},
+	{
+		"lpc", (const char *[]){
+			"lframe", "lclk",
+			"lad0", "lad1", "lad2", "lad3",
+			NULL,
+		},
+	},
+	{
+		"lpc-opt", (const char *[]){
+			"lframe", "lclk",
+			"lad0", "lad1", "lad2", "lad3",
+			"lreset", "ldrq", "serirq", "clkrun",
+			"lpme", "lpcpd", "lsmi",
+			NULL,
+		},
+	},
+	{
+		"mcs48", (const char *[]){
+			"ale", "psen",
+			"d0", "d1", "d2", "d3",
+			"d4", "d5", "d6", "d7",
+			"a8", "a9", "a10", "a11",
+			"a12", "a13",
+			NULL,
+		},
+	},
+	{
+		"microwire", (const char *[]){
+			"cs", "sk", "si", "so", NULL,
+		},
+	},
+	{
+		"sdcard_sd", (const char *[]){
+			"cmd", "clk",
+			"dat0", "dat1", "dat2", "dat3",
+			NULL,
+		},
+	},
+	{
+		"seven_segment", (const char *[]){
+			"a", "b", "c", "d", "e", "f", "g",
+			"dp", NULL,
+		},
+	},
+	{
+		"spi", (const char *[]){
+			"clk", "miso", "mosi", "cs", NULL,
+		},
+	},
+	{
+		"swd", (const char *[]){
+			"swclk", "swdio", NULL,
+		},
+	},
+	{
+		"uart", (const char *[]){
+			"rx", "tx", NULL,
+		},
+	},
+	{
+		"usb", (const char *[]){
+			"dp", "dm", NULL,
+		},
+	},
+	{
+		"z80", (const char *[]){
+			"d0", "d1", "d2", "d3",
+			"d4", "d5", "d6", "d7",
+			"m1", "rd", "wr",
+			"mreq", "iorq",
+			"a0", "a1", "a2", "a3",
+			"a4", "a5", "a6", "a7",
+			"a8", "a9", "a10", "a11",
+			"a12", "a13", "a14", "a15",
+			NULL,
+		},
+	},
+};
+
+/* Case insensitive lookup of an alias name. */
+static const char **lookup_probe_alias(const char *name)
+{
+	size_t idx;
+
+	for (idx = 0; idx < ARRAY_SIZE(probe_name_aliases); idx++) {
+		if (g_ascii_strcasecmp(probe_name_aliases[idx].name, name) != 0)
+			continue;
+		return probe_name_aliases[idx].expands;
+	}
+	return NULL;
+}
+
+/**
+ * Parse a probe names specification, allocate a string vector.
+ *
+ * @param[in] spec The input spec, list of probes or aliases.
+ * @param[in] dflt_names The default probe names, a string array.
+ * @param[in] dflt_count The default probe names count. Either must
+ *        match the unterminated array size, or can be 0 when the
+ *        default names are NULL terminated.
+ * @param[in] max_count Optional resulting vector size limit.
+ * @param[out] ret_count Optional result vector size (return value).
+ *
+ * @returns A string vector with resulting probe names. Or #NULL
+ *        in case of failure.
+ *
+ * The input spec is a comma separated list of probe names. Items can
+ * be aliases which expand to a corresponding set of signal names.
+ * The resulting names list optionally gets padded from the caller's
+ * builtin probe names, an empty input spec yields the original names
+ * as provided by the caller. Padding is omitted when the spec starts
+ * with '-', which may result in a device with fewer channels being
+ * created, enough to cover the user's spec, but none extra to maybe
+ * enable and use later on. An optional maximum length spec will trim
+ * the result set to that size. The resulting vector length optionally
+ * is returned to the caller, so that it need not re-get the length.
+ *
+ * Calling applications must release the allocated vector by means
+ * of @ref sr_free_probe_names().
+ *
+ * @since 0.6.0
+ */
+SR_API char **sr_parse_probe_names(const char *spec,
+	const char **dflt_names, size_t dflt_count,
+	size_t max_count, size_t *ret_count)
+{
+	char **result_names;
+	size_t result_count;
+	gboolean pad_from_dflt;
+	char **spec_names, *spec_name;
+	size_t spec_idx;
+	const char **alias_names;
+
+	if (!spec || !*spec)
+		spec = NULL;
+
+	/*
+	 * Accept zero length spec for default input names. Determine
+	 * the name table's length here. Cannot re-use g_strv_length()
+	 * because of the 'const' decoration in application code.
+	 */
+	if (!dflt_count) {
+		while (dflt_names && dflt_names[dflt_count])
+			dflt_count++;
+	}
+	if (!dflt_count)
+		return NULL;
+
+	/*
+	 * Start with an empty resulting names table. Will grow
+	 * dynamically as more names get appended.
+	 */
+	result_names = NULL;
+	result_count = 0;
+	pad_from_dflt = TRUE;
+
+	/*
+	 * When an input spec exists, use its content. Lookup alias
+	 * names, and append their corresponding signals. Or append
+	 * the verbatim input name if it is not an alias. Recursion
+	 * is not supported in this implementation.
+	 *
+	 * A leading '-' before the signal names list suppresses the
+	 * padding of the resulting list from the device's default
+	 * probe names.
+	 */
+	spec_names = NULL;
+	if (spec && *spec == '-') {
+		spec++;
+		pad_from_dflt = FALSE;
+	}
+	if (spec && *spec)
+		spec_names = g_strsplit(spec, ",", 0);
+	for (spec_idx = 0; spec_names && spec_names[spec_idx]; spec_idx++) {
+		spec_name = spec_names[spec_idx];
+		if (!*spec_name)
+			continue;
+		alias_names = lookup_probe_alias(spec_name);
+		if (alias_names) {
+			result_names = append_probe_names(result_names,
+				&result_count, alias_names);
+		} else {
+			result_names = append_probe_name(result_names,
+				&result_count, spec_name);
+		}
+	}
+	g_strfreev(spec_names);
+
+	/*
+	 * By default pad the resulting names from the caller's
+	 * probe names. Don't pad if the input spec started with
+	 * '-', when the spec's exact length was requested.
+	 */
+	if (pad_from_dflt) do {
+		if (max_count && result_count >= max_count)
+			break;
+		if (result_count >= dflt_count)
+			break;
+		result_names = append_probe_name(result_names, &result_count,
+			dflt_names[result_count]);
+	} while (1);
+
+	/* Optionally trim the result to the caller's length limit. */
+	if (max_count) {
+		while (result_count > max_count) {
+			--result_count;
+			g_free(result_names[result_count]);
+			result_names[result_count] = NULL;
+		}
+	}
+
+	if (ret_count)
+		*ret_count = result_count;
+
+	return result_names;
+}
+
+/**
+ * Release previously allocated probe names (string vector).
+ *
+ * @param[in] names The previously allocated string vector.
+ *
+ * @since 0.6.0
+ */
+SR_API void sr_free_probe_names(char **names)
+{
+	g_strfreev(names);
+}
+
+/**
+ * Trim leading and trailing whitespace off text.
+ *
+ * @param[in] s The input text.
+ *
+ * @return Start of trimmed input text.
+ *
+ * Manipulates the caller's input text in place.
+ *
+ * @since 0.6.0
+ */
+SR_API char *sr_text_trim_spaces(char *s)
+{
+	char *p;
+
+	if (!s || !*s)
+		return s;
+
+	p = s + strlen(s);
+	while (p > s && isspace((int)p[-1]))
+		*(--p) = '\0';
+	while (isspace((int)*s))
+		s++;
+
+	return s;
+}
+
+/**
+ * Check for another complete text line, trim, return consumed char count.
+ *
+ * @param[in] s The input text, current read position.
+ * @param[in] l The input text, remaining available characters.
+ * @param[out] next Position after the current text line.
+ * @param[out] taken Count of consumed chars in current text line.
+ *
+ * @return Start of trimmed and NUL terminated text line.
+ *   Or #NULL when no text line was found.
+ *
+ * Checks for the availability of another text line of input data.
+ * Manipulates the caller's input text in place.
+ *
+ * The end-of-line condition is the LF character ('\n'). Which covers
+ * LF-only as well as CR/LF input data. CR-only and LF/CR are considered
+ * unpopular and are not supported. LF/CR may appear to work at the
+ * caller's when leading whitespace gets trimmed (line boundaries will
+ * be incorrect, but content may get processed as expected). Support for
+ * all of the above combinations breaks the detection of empty lines (or
+ * becomes unmaintainably complex).
+ *
+ * The input buffer must be end-of-line terminated, lack of EOL results
+ * in failure to detect the text line. This is motivated by accumulating
+ * input in chunks, and the desire to not process incomplete lines before
+ * their reception has completed. Callers should enforce EOL if their
+ * source of input provides an EOF condition and is unreliable in terms
+ * of text line termination.
+ *
+ * When another text line is available, it gets NUL terminated and
+ * space gets trimmed of both ends. The start position of the trimmed
+ * text line is returned. Optionally the number of consumed characters
+ * is returned to the caller. Optionally 'next' points to after the
+ * returned text line, or #NULL when no other text is available in the
+ * input buffer.
+ *
+ * The 'taken' value is not preset by this routine, only gets updated.
+ * This is convenient for callers which expect to find multiple text
+ * lines in a received chunk, before finally discarding processed data
+ * from the input buffer (which can involve expensive memory move
+ * operations, and may be desirable to defer as much as possible).
+ *
+ * @since 0.6.0
+ */
+SR_API char *sr_text_next_line(char *s, size_t l, char **next, size_t *taken)
+{
+	char *p;
+
+	if (next)
+		*next = NULL;
+	if (!l)
+		l = strlen(s);
+
+	/* Immediate reject incomplete input data. */
+	if (!s || !*s || !l)
+		return NULL;
+
+	/* Search for the next line termination. NUL terminate. */
+	p = g_strstr_len(s, l, "\n");
+	if (!p)
+		return NULL;
+	*p++ = '\0';
+	if (taken)
+		*taken += p - s;
+	l -= p - s;
+	if (next)
+		*next = l ? p : NULL;
+
+	/* Trim NUL terminated text line at both ends. */
+	s = sr_text_trim_spaces(s);
+	return s;
+}
+
+/**
+ * Isolates another space separated word in a text line.
+ *
+ * @param[in] s The input text, current read position.
+ * @param[out] next The position after the current word.
+ *
+ * @return The start of the current word. Or #NULL if there is none.
+ *
+ * Advances over leading whitespace. Isolates (NUL terminates) the next
+ * whitespace separated word. Optionally returns the position after the
+ * current word. Manipulates the caller's input text in place.
+ *
+ * @since 0.6.0
+ */
+SR_API char *sr_text_next_word(char *s, char **next)
+{
+	char *word, *p;
+
+	word = s;
+	if (next)
+		*next = NULL;
+
+	/* Immediately reject incomplete input data. */
+	if (!word || !*word)
+		return NULL;
+
+	/* Advance over optional leading whitespace. */
+	while (isspace((int)*word))
+		word++;
+	if (!*word)
+		return NULL;
+
+	/*
+	 * Advance until whitespace or end of text. Quick return when
+	 * end of input is seen. Otherwise advance over whitespace and
+	 * return the position of trailing text.
+	 */
+	p = word;
+	while (*p && !isspace((int)*p))
+		p++;
+	if (!*p)
+		return word;
+	*p++ = '\0';
+	while (isspace((int)*p))
+		p++;
+	if (!*p)
+		return word;
+	if (next)
+		*next = p;
+	return word;
+}
+
+/**
+ * Get the number of necessary bits to hold a given value. Also gets
+ * the next power-of-two value at or above the caller provided value.
+ *
+ * @param[in] value The value that must get stored.
+ * @param[out] bits The required number of bits.
+ * @param[out] power The corresponding power-of-two.
+ *
+ * @return SR_OK upon success, SR_ERR* otherwise.
+ *
+ * TODO Move this routine to a more appropriate location, it is not
+ * strictly string related.
+ *
+ * @since 0.6.0
+ */
+SR_API int sr_next_power_of_two(size_t value, size_t *bits, size_t *power)
+{
+	size_t need_bits;
+	size_t check_mask;
+
+	if (bits)
+		*bits = 0;
+	if (power)
+		*power = 0;
+
+	/*
+	 * Handle the special case of input value 0 (needs 1 bit
+	 * and results in "power of two" value 1) here. It is not
+	 * covered by the generic logic below.
+	 */
+	if (!value) {
+		if (bits)
+			*bits = 1;
+		if (power)
+			*power = 1;
+		return SR_OK;
+	}
+
+	need_bits = 0;
+	check_mask = 0;
+	do {
+		need_bits++;
+		check_mask <<= 1;
+		check_mask |= 1UL << 0;
+	} while (value & ~check_mask);
+
+	if (bits)
+		*bits = need_bits;
+	if (power)
+		*power = ++check_mask;
 	return SR_OK;
 }
 

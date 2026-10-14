@@ -18,6 +18,7 @@
  */
 
 #include <config.h>
+#include "analyzer.h"
 #include "protocol.h"
 
 #define USB_INTERFACE			0
@@ -51,6 +52,7 @@ static const struct zp_model zeroplus_models[] = {
 	{0x0c12, 0x700e, "LAP-C(16032)",  16, 32,   100},
 	{0x0c12, 0x7016, "LAP-C(162000)", 16, 2048, 200},
 	{0x0c12, 0x7025, "LAP-C(16128+)", 16, 128,  200},
+	{0x0c12, 0x7060, "Logian-16L",    16, 128,  200},
 	{0x0c12, 0x7064, "Logian-16L",    16, 128,  200},
 	{0x0c12, 0x7100, "AKIP-9101",     16, 256,  200},
 	ALL_ZERO
@@ -66,6 +68,13 @@ static const uint32_t devopts[] = {
 	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
 	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_VOLTAGE_THRESHOLD | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_EXTERNAL_CLOCK | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_CLOCK_EDGE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+};
+
+static const char *ext_clock_edges[] = {
+	[LAPC_CLOCK_EDGE_RISING] = "rising",
+	[LAPC_CLOCK_EDGE_FALLING] = "falling",
 };
 
 static const int32_t trigger_matches[] = {
@@ -169,7 +178,10 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	struct libusb_device_handle *hdl;
 	libusb_device **devlist;
 	GSList *devices;
-	int ret, i, j;
+	int ret;
+	size_t i, j;
+	uint8_t bus, addr;
+	const struct zp_model *check;
 	char serial_num[64], connection_id[64];
 
 	(void)options;
@@ -180,21 +192,47 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	/* Find all ZEROPLUS analyzers and add them to device list. */
 	libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist); /* TODO: Errors. */
-
 	for (i = 0; devlist[i]; i++) {
 		libusb_get_device_descriptor(devlist[i], &des);
 
-		if ((ret = libusb_open(devlist[i], &hdl)) < 0)
+		/*
+		 * Check for expected VID:PID first as soon as we got
+		 * the descriptor's content. This avoids access to flaky
+		 * unrelated devices which trouble the application even
+		 * if they are unrelated to measurement purposes.
+		 *
+		 * See https://sigrok.org/bugzilla/show_bug.cgi?id=1115
+		 * and https://github.com/sigrokproject/libsigrok/pull/165
+		 * for a discussion.
+		 */
+		prof = NULL;
+		for (j = 0; zeroplus_models[j].vid; j++) {
+			check = &zeroplus_models[j];
+			if (des.idVendor != check->vid)
+				continue;
+			if (des.idProduct != check->pid)
+				continue;
+			prof = check;
+			break;
+		}
+		if (!prof)
 			continue;
 
-		if (des.iSerialNumber == 0) {
-			serial_num[0] = '\0';
-		} else if ((ret = libusb_get_string_descriptor_ascii(hdl,
-				des.iSerialNumber, (unsigned char *) serial_num,
-				sizeof(serial_num))) < 0) {
-			sr_warn("Failed to get serial number string descriptor: %s.",
-				libusb_error_name(ret));
+		/* Get the device's serial number from USB strings. */
+		ret = libusb_open(devlist[i], &hdl);
+		if (ret < 0)
 			continue;
+
+		serial_num[0] = '\0';
+		if (des.iSerialNumber != 0) {
+			ret = libusb_get_string_descriptor_ascii(hdl,
+				des.iSerialNumber,
+				(uint8_t *)serial_num, sizeof(serial_num));
+			if (ret < 0) {
+				sr_warn("Cannot get USB serial number: %s.",
+					libusb_error_name(ret));
+				continue;
+			}
 		}
 
 		libusb_close(hdl);
@@ -202,26 +240,21 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		if (usb_get_port_path(devlist[i], connection_id, sizeof(connection_id)) < 0)
 			continue;
 
-		prof = NULL;
-		for (j = 0; j < zeroplus_models[j].vid; j++) {
-			if (des.idVendor == zeroplus_models[j].vid &&
-				des.idProduct == zeroplus_models[j].pid) {
-				prof = &zeroplus_models[j];
-			}
-		}
-
-		if (!prof)
-			continue;
 		sr_info("Found ZEROPLUS %s.", prof->model_name);
 
-		sdi = g_malloc0(sizeof(struct sr_dev_inst));
+		sdi = g_malloc0(sizeof(*sdi));
 		sdi->status = SR_ST_INACTIVE;
 		sdi->vendor = g_strdup("ZEROPLUS");
 		sdi->model = g_strdup(prof->model_name);
 		sdi->serial_num = g_strdup(serial_num);
 		sdi->connection_id = g_strdup(connection_id);
 
-		devc = g_malloc0(sizeof(struct dev_context));
+		bus = libusb_get_bus_number(devlist[i]);
+		addr = libusb_get_device_address(devlist[i]);
+		sdi->inst_type = SR_INST_USB;
+		sdi->conn = sr_usb_dev_inst_new(bus, addr, NULL);
+
+		devc = g_malloc0(sizeof(*devc));
 		sdi->priv = devc;
 		devc->prof = prof;
 		devc->num_channels = prof->channels;
@@ -234,17 +267,13 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 #endif
 		devc->max_samplerate *= SR_MHZ(1);
 		devc->memory_size = MEMORY_SIZE_8K;
-		// memset(devc->trigger_buffer, 0, NUM_TRIGGER_STAGES);
 
-		for (j = 0; j < devc->num_channels; j++)
+		for (j = 0; j < devc->num_channels; j++) {
 			sr_channel_new(sdi, j, SR_CHANNEL_LOGIC, TRUE,
 					channel_names[j]);
+		}
 
 		devices = g_slist_append(devices, sdi);
-		sdi->inst_type = SR_INST_USB;
-		sdi->conn = sr_usb_dev_inst_new(
-			libusb_get_bus_number(devlist[i]),
-			libusb_get_device_address(devlist[i]), NULL);
 	}
 	libusb_free_device_list(devlist, 1);
 
@@ -338,6 +367,7 @@ static int config_get(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
+	const char *ext_clock_text;
 
 	(void)cg;
 
@@ -356,6 +386,13 @@ static int config_get(uint32_t key, GVariant **data,
 	case SR_CONF_VOLTAGE_THRESHOLD:
 		*data = std_gvar_tuple_double(devc->cur_threshold, devc->cur_threshold);
 		break;
+	case SR_CONF_EXTERNAL_CLOCK:
+		*data = g_variant_new_boolean(devc->use_ext_clock);
+		break;
+	case SR_CONF_CLOCK_EDGE:
+		ext_clock_text = ext_clock_edges[devc->ext_clock_edge];
+		*data = g_variant_new_string(ext_clock_text);
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -367,6 +404,7 @@ static int config_set(uint32_t key, GVariant *data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
+	int idx;
 	gdouble low, high;
 
 	(void)cg;
@@ -384,6 +422,17 @@ static int config_set(uint32_t key, GVariant *data,
 	case SR_CONF_VOLTAGE_THRESHOLD:
 		g_variant_get(data, "(dd)", &low, &high);
 		return set_voltage_threshold(devc, (low + high) / 2.0);
+	case SR_CONF_EXTERNAL_CLOCK:
+		devc->use_ext_clock = g_variant_get_boolean(data);
+		analyzer_set_ext_clock(devc->use_ext_clock, (ext_clock_edge_t)devc->ext_clock_edge);
+		break;
+	case SR_CONF_CLOCK_EDGE:
+		idx = std_str_idx(data, ARRAY_AND_SIZE(ext_clock_edges));
+		if (idx < 0)
+			return SR_ERR_ARG;
+		devc->ext_clock_edge = (ext_clock_edge_t)idx;
+		analyzer_set_ext_clock(devc->use_ext_clock, devc->ext_clock_edge);
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -423,6 +472,10 @@ static int config_list(uint32_t key, GVariant **data,
 		devc = sdi->priv;
 		*data = std_gvar_tuple_u64(0, devc->max_sample_depth);
 		break;
+	case SR_CONF_CLOCK_EDGE:
+		*data = g_variant_new_strv(ARRAY_AND_SIZE(ext_clock_edges));
+		break;
+
 	default:
 		return SR_ERR_NA;
 	}

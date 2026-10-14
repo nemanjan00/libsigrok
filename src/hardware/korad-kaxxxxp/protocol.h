@@ -31,40 +31,25 @@
 
 #define KAXXXXP_POLL_INTERVAL_MS 80
 
-enum {
-	VELLEMAN_PS3005D,
-	VELLEMAN_LABPS3005D,
-	KORAD_KA3005P,
-	KORAD_KA3005P_0X01,
-	KORAD_KA3005P_0XBC,
-	KORAD_KA3005P_V42,
-	KORAD_KA3005P_V55,
-	KORAD_KD3005P,
-	KORAD_KD3005P_V20_NOSP,
-	KORAD_KD3005P_V21_NOSP,
-	RND_320_KD3005P,
-	RND_320_KA3005P,
-	RND_320K30PV,
-	TENMA_72_2550_V2,
-	TENMA_72_2540_V20,
-	TENMA_72_2540_V21,
-	TENMA_72_2540_V52,
-	TENMA_72_2535_V21,
-	TENMA_72_2710_V66,
-	STAMOS_SLS31_V20,
-	KORAD_KD6005P,
-	/* Support for future devices with this protocol. */
+enum korad_quirks_flag {
+	KORAD_QUIRK_NONE = 0,
+	KORAD_QUIRK_LABPS_OVP_EN = 1UL << 0,
+	KORAD_QUIRK_ID_NO_VENDOR = 1UL << 1,
+	KORAD_QUIRK_ID_TRAILING = 1UL << 2,
+	KORAD_QUIRK_ID_OPT_VERSION = 1UL << 3,
+	KORAD_QUIRK_SLOW_PROCESSING = 1UL << 4,
+	KORAD_QUIRK_ALL = (1UL << 5) - 1,
 };
 
 /* Information on single model */
 struct korad_kaxxxxp_model {
-	int model_id; /**< Model info */
 	const char *vendor; /**< Vendor name */
 	const char *name; /**< Model name */
 	const char *id; /**< Model ID, as delivered by interface */
 	int channels; /**< Number of channels */
-	double voltage[3]; /**< Min, max, step */
-	double current[3]; /**< Min, max, step */
+	const double *voltage; /**< References: Min, max, step */
+	const double *current; /**< References: Min, max, step */
+	enum korad_quirks_flag quirks;
 };
 
 /* Reply targets */
@@ -86,7 +71,7 @@ struct dev_context {
 	const struct korad_kaxxxxp_model *model; /**< Model information. */
 
 	struct sr_sw_limits limits;
-	int64_t req_sent_at;
+	int64_t next_req_time;
 	GMutex rw_mutex;
 
 	float current;          /**< Last current value [A] read from device. */
@@ -118,15 +103,15 @@ struct dev_context {
 };
 
 SR_PRIV int korad_kaxxxxp_send_cmd(struct sr_serial_dev_inst *serial,
-					const char *cmd);
+		const char *cmd);
 SR_PRIV int korad_kaxxxxp_read_chars(struct sr_serial_dev_inst *serial,
-					size_t count, char *buf);
+		size_t count, char *buf);
 SR_PRIV int korad_kaxxxxp_set_value(struct sr_serial_dev_inst *serial,
-					int target, struct dev_context *devc);
+		int target, struct dev_context *devc);
 SR_PRIV int korad_kaxxxxp_get_value(struct sr_serial_dev_inst *serial,
-					int target, struct dev_context *devc);
+		int target, struct dev_context *devc);
 SR_PRIV int korad_kaxxxxp_get_all_values(struct sr_serial_dev_inst *serial,
-					struct dev_context *devc);
+		struct dev_context *devc);
 SR_PRIV int korad_kaxxxxp_receive_data(int fd, int revents, void *cb_data);
 
 #endif

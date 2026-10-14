@@ -42,6 +42,9 @@
 #define REG_LED_BLUE		0x11
 #define REG_STATUS		0x40
 
+/* Verified sustainable sample stream over USB 3 (bits per second); 2 Gbit/s overruns. */
+#define MAX_BANDWIDTH_BPS	(1000ULL * 1000 * 1000)
+
 static void iterate_lfsr(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
@@ -91,6 +94,32 @@ static void decrypt(const struct sr_dev_inst *sdi, uint8_t *data, uint16_t len)
 	iterate_lfsr(sdi);
 }
 
+/*
+ * Reseed packet for seed 0 (the seed is XORed with a fixed key in the
+ * packet, so this resets the device LFSR to 0). It has no response and does
+ * not advance the LFSR.
+ */
+static const uint8_t reseed_req[] = {0x20, 0x24, 0x4b, 0x35, 0x8e};
+
+/*
+ * After a failed transaction the device LFSR may have advanced while ours did
+ * not. Any further command would then decrypt to garbage on the device, and
+ * the firmware treats unknown commands as fatal (it needs a power cycle to
+ * recover). Reseed unconditionally to get both sides back in sync.
+ */
+static void resync(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc = sdi->priv;
+	struct sr_usb_dev_inst *usb = sdi->conn;
+	uint8_t req[sizeof(reseed_req)];
+	int xfer;
+
+	memcpy(req, reseed_req, sizeof(req));
+	devc->lfsr = 0;
+	if (libusb_bulk_transfer(usb->devhdl, 1, req, sizeof(req), &xfer, 1000) != 0)
+		sr_err("Failed to resync command channel.");
+}
+
 static int transact(const struct sr_dev_inst *sdi,
 		    const uint8_t *req, uint16_t req_len,
 		    uint8_t *rsp, uint16_t rsp_len)
@@ -108,15 +137,16 @@ static int transact(const struct sr_dev_inst *sdi,
 	encrypt(sdi, req, req_enc, req_len);
 
 	ret = libusb_bulk_transfer(usb->devhdl, 1, req_enc, req_len, &xfer, 1000);
+	g_free(req_enc);
 	if (ret != 0) {
 		sr_dbg("Failed to send request 0x%02x: %s.",
 		       req[1], libusb_error_name(ret));
-		return SR_ERR;
+		goto err;
 	}
 	if (xfer != req_len) {
 		sr_dbg("Failed to send request 0x%02x: incorrect length "
 		       "%d != %d.", req[1], xfer, req_len);
-		return SR_ERR;
+		goto err;
 	}
 
 	if (req[0] == 0x20) { /* Reseed. */
@@ -131,26 +161,30 @@ static int transact(const struct sr_dev_inst *sdi,
 	if (ret != 0) {
 		sr_dbg("Failed to receive response to request 0x%02x: %s.",
 		       req[1], libusb_error_name(ret));
-		return SR_ERR;
+		goto err;
 	}
 	if (xfer != rsp_len) {
 		sr_dbg("Failed to receive response to request 0x%02x: "
 		       "incorrect length %d != %d.", req[1], xfer, rsp_len);
-		return SR_ERR;
+		goto err;
 	}
 
 	decrypt(sdi, rsp, rsp_len);
 
 	return SR_OK;
+
+err:
+	if (req[0] != 0x20)
+		resync(sdi);
+	return SR_ERR;
 }
 
 static int reseed(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
-	uint8_t req[] = {0x20, 0x24, 0x4b, 0x35, 0x8e};
 
 	devc->lfsr = 0;
-	return transact(sdi, req, sizeof(req), NULL, 0);
+	return transact(sdi, reseed_req, sizeof(reseed_req), NULL, 0);
 }
 
 static int write_regs(const struct sr_dev_inst *sdi, uint8_t (*regs)[2], uint8_t cnt)
@@ -588,8 +622,43 @@ static int configure_channels(const struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
+/*
+ * Post-bitstream init as done by Logic 2 for the Logic Pro 8 (hardware with
+ * a Lattice FPGA), taken from a USB capture.
+ */
+static int logic2_post_bitstream_init(const struct sr_dev_inst *sdi)
+{
+	static const struct { uint8_t reg; uint16_t val; } adc[] = {
+		{0x00, 0x0001}, {0x0f, 0x0000}, {0x11, 0x0777}, {0x12, 0x4444},
+		{0x2a, 0x1111}, {0x2b, 0x1111}, {0x42, 0x8040}, {0x46, 0x8204},
+	};
+	uint8_t val;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(adc); i++)
+		if ((ret = write_adc(sdi, adc[i].reg, adc[i].val)) != SR_OK)
+			return ret;
+
+	if ((ret = write_reg(sdi, 0x00, 0x04)) != SR_OK ||
+	    (ret = write_reg(sdi, 0x00, 0x00)) != SR_OK ||
+	    (ret = read_reg(sdi, REG_STATUS, &val)) != SR_OK)
+		return ret;
+	sr_dbg("status after reset: 0x%02x", val);
+	if ((ret = write_reg(sdi, 0x00, 0x08)) != SR_OK ||
+	    (ret = write_reg(sdi, 0x00, 0x00)) != SR_OK ||
+	    (ret = write_reg(sdi, 0x15, 0x00)) != SR_OK ||
+	    (ret = write_adc(sdi, 0x0f, 0x0100)) != SR_OK ||
+	    (ret = write_reg(sdi, 0x00, 0x00)) != SR_OK ||
+	    (ret = write_reg(sdi, 0x12, 0x04)) != SR_OK)
+		return ret;
+
+	return SR_OK;
+}
+
 SR_PRIV int saleae_logic_pro_init(const struct sr_dev_inst *sdi)
 {
+	struct dev_context *devc = sdi->priv;
 	uint8_t reg_val;
 	uint8_t dummy[8];
 	uint8_t serial[8];
@@ -617,10 +686,13 @@ SR_PRIV int saleae_logic_pro_init(const struct sr_dev_inst *sdi)
 	if (reg_val == 0xaa) {
 		sr_info("Skipping bitstream upload.");
 	} else {
-		ret = upload_bitstream(sdi, "saleae-logicpro16-fpga.bitstream");
+		ret = upload_bitstream(sdi, devc->profile->bitstream_name);
 		if (ret != SR_OK)
 			return ret;
 	}
+
+	if (devc->profile->logic2_init)
+		return logic2_post_bitstream_init(sdi);
 
 	/* Reset the ADC? */
 	sr_dbg("reset ADC");
@@ -746,6 +818,7 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 	};
 	uint8_t start_req[] = {0x00, 0x01};
 	uint8_t start_rsp[2] = {};
+	uint64_t rate, div, bw, throttle;
 
 	configure_channels(sdi);
 
@@ -754,37 +827,73 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 	regs_config[4][1] = devc->dig_channel_mask >> 8;
 	regs_config[9][1] = devc->dig_channel_cnt;
 
-	/* Samplerate */
-	switch (devc->dig_samplerate) {
-	case SR_MHZ(1):
-		regs_config[6][1] = 0x64;
-		break;
-	case SR_MHZ(2):
-		regs_config[6][1] = 0x32;
-		break;
-	case SR_KHZ(2500):
-		regs_config[6][1] = 0x28;
-		break;
-	case SR_MHZ(10):
-		regs_config[6][1] = 0x0a;
-		break;
-	case SR_MHZ(25):
-		regs_config[6][1] = 0x04;
-		regs_config[12][1] = 0x80;
-		break;
-	case SR_MHZ(50):
-		regs_config[6][1] = 0x02;
-		regs_config[12][1] = 0x40;
-		break;
-	default:
+	if (devc->dig_channel_cnt == 0) {
+		sr_err("No channels enabled.");
 		return SR_ERR_ARG;
 	}
 
-	authenticate(sdi);
+	/*
+	 * Digital samplerate: the FPGA samples at 500 MHz, decimated by
+	 * 5 * div (16-bit div in regs 0x0b/0x0c), or not at all for div 0.
+	 */
+	rate = devc->dig_samplerate;
+	if (!rate || SR_MHZ(500) % rate) {
+		sr_err("Unsupported samplerate %" PRIu64 ".", rate);
+		return SR_ERR_ARG;
+	}
+	div = SR_MHZ(500) / rate;
+	if (div == 1) {
+		div = 0;
+	} else if (div % 5 || div / 5 > 0xffff) {
+		sr_err("Unsupported samplerate %" PRIu64 ".", rate);
+		return SR_ERR_ARG;
+	} else {
+		div /= 5;
+	}
+	regs_config[6][1] = div;
+	regs_config[7][1] = div >> 8;
 
-	write_reg(sdi, 0x15, 0x03);
-	write_regs(sdi, ARRAY_AND_SIZE(regs_unknown));
-	write_regs(sdi, ARRAY_AND_SIZE(regs_config));
+	/*
+	 * USB bandwidth throttle, as computed by the vendor software:
+	 * 100e6 / (bits per second / 32), saturated to 8 bits.
+	 */
+	bw = rate * devc->dig_channel_cnt;
+	if (bw > MAX_BANDWIDTH_BPS) {
+		sr_err("Samplerate too high for %u channels (max %" PRIu64
+		       " bit/s over USB).", devc->dig_channel_cnt,
+		       (uint64_t)MAX_BANDWIDTH_BPS);
+		return SR_ERR_ARG;
+	}
+	throttle = SR_MHZ(100) / (bw / 32);
+	regs_config[12][1] = MIN(throttle, 0xff);
+
+	if (devc->profile->logic2_init) {
+		/* Exact register block Logic 2 writes for a digital capture. */
+		uint8_t regs_l2[][2] = {
+			{0x00, 0x00},
+			{0x08, 0x00},			/* Analog channel mask */
+			{0x06, devc->dig_channel_mask},	/* Digital channel mask */
+			{0x0a, 0x00},			/* Analog divider */
+			{0x1b, 0x00},
+			{0x0b, regs_config[6][1]},	/* Digital divider LSB */
+			{0x0c, regs_config[7][1]},	/* Digital divider MSB */
+			{0x1a, 0x00},
+			{0x0d, 0x00},			/* Analog mux */
+			{0x0e, devc->dig_channel_cnt},	/* Digital mux */
+			{0x12, 0x04},			/* IO voltage option */
+			{0x13, 0x00},
+			{0x14, regs_config[12][1]},	/* USB throttle */
+		};
+		write_reg(sdi, 0x15, 0x03);
+		write_regs(sdi, ARRAY_AND_SIZE(regs_unknown));
+		write_regs(sdi, ARRAY_AND_SIZE(regs_l2));
+	} else {
+		authenticate(sdi);
+
+		write_reg(sdi, 0x15, 0x03);
+		write_regs(sdi, ARRAY_AND_SIZE(regs_unknown));
+		write_regs(sdi, ARRAY_AND_SIZE(regs_config));
+	}
 
 	transact(sdi, start_req, sizeof(start_req), start_rsp, sizeof(start_rsp));
 
@@ -816,7 +925,8 @@ SR_PRIV int saleae_logic_pro_stop(const struct sr_dev_inst *sdi)
 	ret = read_reg(sdi, 0x40, &status);
 	if (ret != SR_OK)
 		return ret;
-	if (status != 0x20) {
+	/* Bit 7 is set in normal operation with the Logic 2 bitstream. */
+	if ((status & 0x7f) != 0x20) {
 		sr_err("Capture error (status reg = 0x%02x).", status);
 		return SR_ERR;
 	}
@@ -885,27 +995,96 @@ static void saleae_logic_pro_convert_data(const struct sr_dev_inst *sdi,
 	devc->batch_index = batch_index;
 }
 
+static void free_transfer(struct libusb_transfer *transfer)
+{
+	const struct sr_dev_inst *sdi = transfer->user_data;
+	struct dev_context *devc = sdi->priv;
+	unsigned int i;
+
+	for (i = 0; i < devc->num_transfers; i++) {
+		if (devc->transfers[i] == transfer) {
+			devc->transfers[i] = NULL;
+			break;
+		}
+	}
+	g_free(transfer->buffer);
+	libusb_free_transfer(transfer);
+	devc->submitted_transfers--;
+}
+
 SR_PRIV void LIBUSB_CALL saleae_logic_pro_receive_data(struct libusb_transfer *transfer)
 {
 	const struct sr_dev_inst *sdi = transfer->user_data;
 	struct dev_context *devc = sdi->priv;
+	uint64_t remain;
+	size_t samples, i;
+	uint8_t *data;
+	int trigger_offset, pre_trigger_samples;
+	gboolean exceeded;
 	int ret;
 
 	switch (transfer->status) {
-	case LIBUSB_TRANSFER_NO_DEVICE:
-		sr_dbg("FIXME no device");
-		return;
 	case LIBUSB_TRANSFER_COMPLETED:
 	case LIBUSB_TRANSFER_TIMED_OUT: /* We may have received some data though. */
 		break;
 	default:
-		/* FIXME */
+		if (transfer->status != LIBUSB_TRANSFER_CANCELLED)
+			sr_dbg("Transfer failed: %s.",
+			       libusb_error_name(transfer->status));
+		devc->acq_done = TRUE;
+		free_transfer(transfer);
 		return;
 	}
 
-	saleae_logic_pro_convert_data(sdi, (uint32_t*)transfer->buffer, 16 * 1024 / 4);
-	saleae_logic_pro_send_data(sdi, devc->conv_buffer, devc->conv_size, 2);
+	if (devc->acq_done) {
+		free_transfer(transfer);
+		return;
+	}
 
-	if ((ret = libusb_submit_transfer(transfer)) != LIBUSB_SUCCESS)
-		sr_dbg("FIXME resubmit failed");
+	saleae_logic_pro_convert_data(sdi, (uint32_t *)transfer->buffer,
+				      transfer->actual_length / 4);
+
+	/* The conversion yields 16-bit samples; pack to the logic unitsize. */
+	data = devc->conv_buffer;
+	samples = devc->conv_size / 2;
+	if (devc->unitsize == 1) {
+		for (i = 0; i < samples; i++)
+			data[i] = ((uint16_t *)data)[i];
+	}
+
+	if (!devc->trigger_fired && samples) {
+		trigger_offset = soft_trigger_logic_check(devc->stl, data,
+			samples * devc->unitsize, &pre_trigger_samples);
+		if (trigger_offset < 0) {
+			samples = 0;
+		} else {
+			/* Pre-trigger samples were sent by the soft trigger. */
+			sr_sw_limits_update_samples_read(&devc->limits,
+							 pre_trigger_samples);
+			devc->trigger_fired = TRUE;
+			data += trigger_offset * devc->unitsize;
+			samples -= trigger_offset;
+		}
+	}
+
+	sr_sw_limits_get_remain(&devc->limits, &remain, NULL, NULL, &exceeded);
+	if (devc->limits.limit_samples && samples > remain)
+		samples = remain;
+	if (samples) {
+		saleae_logic_pro_send_data(sdi, data, samples * devc->unitsize,
+					   devc->unitsize);
+		sr_sw_limits_update_samples_read(&devc->limits, samples);
+	}
+
+	if (sr_sw_limits_check(&devc->limits)) {
+		devc->acq_done = TRUE;
+		free_transfer(transfer);
+		return;
+	}
+
+	if ((ret = libusb_submit_transfer(transfer)) != LIBUSB_SUCCESS) {
+		sr_err("Failed to resubmit transfer: %s.", libusb_error_name(ret));
+		devc->acq_done = TRUE;
+		free_transfer(transfer);
+	}
 }

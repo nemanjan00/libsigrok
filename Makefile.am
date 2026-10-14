@@ -25,6 +25,8 @@ GNUMAKEFLAGS = --no-print-directory
 # distutils/setuptools cause trouble on distcheck. Disable for now.
 DISTCHECK_CONFIGURE_FLAGS = --disable-python
 
+CLEAN_EXTRA =
+
 FIRMWARE_DIR = $(datadir)/sigrok-firmware
 
 local_includes = -Iinclude -I$(srcdir)/include -I$(srcdir)/src -I. @RPC_CFLAGS@
@@ -69,11 +71,15 @@ libsigrok_la_SOURCES = \
 	src/version.c \
 	src/error.c \
 	src/std.c \
-	src/sw_limits.c
+	src/sw_limits.c \
+	src/tcp.c
 
 # Support code, shared among input and driver modules
 libsigrok_la_SOURCES += \
-	src/minilzo/minilzo.c
+	src/minilzo/minilzo.c \
+	src/minilzo/minilzo.h \
+	src/minilzo/lzoconf.h \
+	src/minilzo/lzodefs.h
 
 # Input modules
 libsigrok_la_SOURCES += \
@@ -83,11 +89,13 @@ libsigrok_la_SOURCES += \
 	src/input/chronovu_la8.c \
 	src/input/csv.c \
 	src/input/logicport.c \
+	src/input/protocoldata.c \
 	src/input/raw_analog.c \
 	src/input/saleae.c \
 	src/input/trace32_ad.c \
 	src/input/vcd.c \
 	src/input/wav.c \
+	src/input/isf.c \
 	src/input/null.c
 if HAVE_INPUT_STF
 libsigrok_la_SOURCES += \
@@ -145,6 +153,7 @@ libsigrok_la_SOURCES += \
 	src/serial_hid_cp2110.c \
 	src/serial_hid_victor.c \
 	src/serial_libsp.c \
+	src/serial_tcpraw.c \
 	src/scpi/scpi_serial.c
 else
 libsigrok_la_SOURCES += \
@@ -176,6 +185,7 @@ endif
 # Hardware (DMM chip parsers)
 libsigrok_la_SOURCES += \
 	src/dmm/asycii.c \
+	src/dmm/qm1578.c \
 	src/dmm/bm25x.c \
 	src/dmm/bm52x.c \
 	src/dmm/bm85x.c \
@@ -256,6 +266,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/asix-sigma/protocol.c \
 	src/hardware/asix-sigma/api.c
 endif
+if HW_ATORCH
+src_libdrivers_la_SOURCES += \
+	src/hardware/atorch/protocol.h \
+	src/hardware/atorch/protocol.c \
+	src/hardware/atorch/api.c
+endif
 if HW_ATTEN_PPS3XXX
 src_libdrivers_la_SOURCES += \
 	src/hardware/atten-pps3xxx/protocol.h \
@@ -278,6 +294,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/beaglelogic/api.c \
 	src/hardware/beaglelogic/beaglelogic_native.c \
 	src/hardware/beaglelogic/beaglelogic_tcp.c
+endif
+if HW_BKPRECISION_1856D
+src_libdrivers_la_SOURCES += \
+	src/hardware/bkprecision-1856d/protocol.h \
+	src/hardware/bkprecision-1856d/protocol.c \
+	src/hardware/bkprecision-1856d/api.c
 endif
 if HW_CEM_DT_885X
 src_libdrivers_la_SOURCES += \
@@ -321,6 +343,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/demo/protocol.c \
 	src/hardware/demo/api.c
 endif
+if HW_DEVANTECH_ETH008
+src_libdrivers_la_SOURCES += \
+	src/hardware/devantech-eth008/protocol.h \
+	src/hardware/devantech-eth008/protocol.c \
+	src/hardware/devantech-eth008/api.c
+endif
 if HW_DREAMSOURCELAB_DSLOGIC
 src_libdrivers_la_SOURCES += \
 	src/hardware/dreamsourcelab-dslogic/protocol.h \
@@ -337,6 +365,9 @@ if HW_FLUKE_DMM
 src_libdrivers_la_SOURCES += \
 	src/hardware/fluke-dmm/protocol.h \
 	src/hardware/fluke-dmm/protocol.c \
+	src/hardware/fluke-dmm/fluke-18x.c \
+	src/hardware/fluke-dmm/fluke-190.c \
+	src/hardware/fluke-dmm/fluke-28x.c \
 	src/hardware/fluke-dmm/api.c
 endif
 if HW_FTDI_LA
@@ -357,6 +388,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/gmc-mh-1x-2x/protocol.c \
 	src/hardware/gmc-mh-1x-2x/api.c
 endif
+if HW_GREATFET
+src_libdrivers_la_SOURCES += \
+	src/hardware/greatfet/protocol.h \
+	src/hardware/greatfet/protocol.c \
+	src/hardware/greatfet/api.c
+endif
 if HW_GWINSTEK_GDS_800
 src_libdrivers_la_SOURCES += \
 	src/hardware/gwinstek-gds-800/protocol.h \
@@ -368,6 +405,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/gwinstek-gpd/protocol.h \
 	src/hardware/gwinstek-gpd/protocol.c \
 	src/hardware/gwinstek-gpd/api.c
+endif
+if HW_GWINSTEK_PSP
+src_libdrivers_la_SOURCES += \
+	src/hardware/gwinstek-psp/protocol.h \
+	src/hardware/gwinstek-psp/protocol.c \
+	src/hardware/gwinstek-psp/api.c
 endif
 if HW_HAMEG_HMO
 src_libdrivers_la_SOURCES += \
@@ -417,6 +460,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/hung-chang-dso-2100/protocol.c \
 	src/hardware/hung-chang-dso-2100/api.c
 endif
+if HW_ICSTATION_USBRELAY
+src_libdrivers_la_SOURCES += \
+	src/hardware/icstation-usbrelay/protocol.h \
+	src/hardware/icstation-usbrelay/protocol.c \
+	src/hardware/icstation-usbrelay/api.c
+endif
 if HW_IKALOGIC_SCANALOGIC2
 src_libdrivers_la_SOURCES += \
 	src/hardware/ikalogic-scanalogic2/protocol.h \
@@ -440,6 +489,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/itech-it8500/protocol.h \
 	src/hardware/itech-it8500/protocol.c \
 	src/hardware/itech-it8500/api.c
+endif
+if HW_JUNTEK_JDS6600
+src_libdrivers_la_SOURCES += \
+	src/hardware/juntek-jds6600/protocol.h \
+	src/hardware/juntek-jds6600/protocol.c \
+	src/hardware/juntek-jds6600/api.c
 endif
 if HW_KECHENG_KC_330B
 src_libdrivers_la_SOURCES += \
@@ -482,6 +537,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/lecroy-xstream/protocol.h \
 	src/hardware/lecroy-xstream/protocol.c \
 	src/hardware/lecroy-xstream/api.c
+endif
+if HW_LINK_MSO19
+src_libdrivers_la_SOURCES += \
+	src/hardware/link-mso19/protocol.h \
+	src/hardware/link-mso19/protocol.c \
+	src/hardware/link-mso19/api.c
 endif
 if HW_MANSON_HCS_3XXX
 src_libdrivers_la_SOURCES += \
@@ -548,6 +609,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/pipistrello-ols/protocol.h \
 	src/hardware/pipistrello-ols/protocol.c \
 	src/hardware/pipistrello-ols/api.c
+endif
+if HW_RASPBERRYPI_PICO
+src_libdrivers_la_SOURCES += \
+	src/hardware/raspberrypi-pico/protocol.h \
+	src/hardware/raspberrypi-pico/protocol.c \
+	src/hardware/raspberrypi-pico/api.c
 endif
 if HW_RDTECH_DPS
 src_libdrivers_la_SOURCES += \
@@ -621,6 +688,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/serial-lcr/protocol.h \
 	src/hardware/serial-lcr/protocol.c \
 	src/hardware/serial-lcr/api.c
+endif
+if HW_SIGLENT_SDL10X0
+src_libdrivers_la_SOURCES += \
+	src/hardware/siglent-sdl10x0/protocol.h \
+	src/hardware/siglent-sdl10x0/protocol.c \
+	src/hardware/siglent-sdl10x0/api.c
 endif
 if HW_SIGLENT_SDS
 src_libdrivers_la_SOURCES += \
@@ -716,6 +789,35 @@ nodist_library_include_HEADERS = \
 	include/libsigrok/version.h
 noinst_HEADERS = src/libsigrok-internal.h
 
+$(builddir)/src/version.lo: $(builddir)/include/libsigrok/git-version.h
+
+# Create the git-version.h file even for non-versioned source trees,
+# to reduce complexity in the library code. Re-create the header file
+# when branches change, when revisions change, or upon re-configuration.
+# Use the verbatim tagged version number when applicable, or append the
+# "-git-<hash>[-dirty]" suffix for non-tagged source trees.
+if VCS_IS_GIT
+
+$(builddir)/include/libsigrok/git-version.h: Makefile $(VERSION_GITVERSION_DEPS)
+	$(AM_V_GEN) \
+		HASH=`git -C "$(srcdir)" describe --match "@VERSION_TAG_MATCH@" --always --dirty` && \
+		HASH=`echo "$${HASH}" | sed 's/@VERSION_TAG_MATCH@-//'` && \
+		SUFFIX=`git -C "$(srcdir)" describe --match "@VERSION_TAG_MATCH@" --exact-match > /dev/null 2> /dev/null || echo "-$${HASH}"` && \
+		echo "#undef SR_PACKAGE_VERSION_STRING_SUFFIX" > $@ && \
+		echo "#define SR_PACKAGE_VERSION_STRING_SUFFIX \"$${SUFFIX}\"" >> $@
+
+else
+
+$(builddir)/include/libsigrok/git-version.h:
+	$(AM_V_GEN)echo '#define SR_PACKAGE_VERSION_STRING_SUFFIX ""' > $@
+
+endif
+
+version-clean:
+	rm -f $(builddir)/include/libsigrok/git-version.h
+
+CLEAN_EXTRA += version-clean
+
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libsigrok.pc
 
@@ -758,7 +860,11 @@ EXTRA_DIST = \
 	contrib/vnd.sigrok.session.xml \
 	contrib/60-libsigrok.rules \
 	contrib/61-libsigrok-plugdev.rules \
-	contrib/61-libsigrok-uaccess.rules
+	contrib/61-libsigrok-uaccess.rules \
+	src/minilzo/COPYING \
+	src/minilzo/Makefile \
+	src/minilzo/README.LZO \
+	src/minilzo/testmini.c
 
 if HAVE_CHECK
 TESTS = tests/main
@@ -789,7 +895,6 @@ tests_main_LDADD = libsigrok.la $(SR_EXTRA_LIBS) $(TESTS_LIBS)
 BUILD_EXTRA =
 INSTALL_EXTRA =
 UNINSTALL_EXTRA =
-CLEAN_EXTRA =
 
 libsigrok-uninstall:
 	-rmdir $(DESTDIR)$(includedir)/libsigrok
