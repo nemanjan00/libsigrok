@@ -64,8 +64,24 @@ A full build currently has 8 warnings, all in untouched upstream files
 - Use the libsigrok subject style: `<driver>: <imperative summary>`, e.g.
   `saleae-logic-pro: Add Logic Pro 8 support`.
 - No AI attribution in commits (no `Co-Authored-By` or "Generated with" lines).
-- Small fixes may go straight to `master`. Larger work goes on a topic branch
-  that's merged with `--no-ff`, so the merge graph stays readable.
+## Branches: kept upstreamable
+
+Every feature lives on a **topic branch based on upstream `master`**, so it
+can be sent upstream as is. `master` is only where the branches are combined.
+
+- Branch from `origin/master`, not from this fork's `master`:
+  `git checkout -b <topic> origin/master`.
+- Only upstreamable changes go on a topic branch: driver code and its docs
+  (e.g. `src/hardware/<driver>/PROTOCOL.md`). Fork-only files such as this
+  `AGENTS.md` stay on `master`.
+- Commit to the topic branch first, push it, then merge it into `master` with
+  `--no-ff` and push `master`. Both must always carry the same driver
+  changes.
+- To refresh a topic branch for upstreaming, rebase it on the latest
+  `origin/master` (topic branches may be force-pushed; `master` never).
+- Current topic branches: `saleae-logic-pro8` (Saleae Logic Pro 8). The
+  DSLogic and SLogic work is maintained upstream-style in their own repos
+  (`christian/*`, `sipeed/slogic-dev`) and is merged from there.
 
 ## Saleae Logic Pro 8 (`saleae-logic-pro`)
 
