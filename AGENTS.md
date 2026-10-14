@@ -83,7 +83,9 @@ both extracted from Saleae Logic 2 (2.4.46, `libgraph_server_shared.so`):
   It's byte-identical to what Logic 2 uploads.
 
 The protocol is reverse engineered from usbmon traces of Logic 2 and from
-static analysis of Logic 2 and the FX3 firmware. Key facts:
+static analysis of Logic 2 and the FX3 firmware. The full write-up is in
+[`src/hardware/saleae-logic-pro/PROTOCOL.md`](src/hardware/saleae-logic-pro/PROTOCOL.md).
+Key facts:
 
 - **The FX3 firmware is RAM-only.** At power-up the device is the
   "Cypress WestBridge" bootloader on USB 2. The driver uploads firmware with
