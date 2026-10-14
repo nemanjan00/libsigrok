@@ -27,6 +27,9 @@
 
 #define LOG_PREFIX "saleae-logic-pro"
 
+/* Verified sustainable sample stream over USB 3 (bits per second); 2 Gbit/s overruns. */
+#define MAX_BANDWIDTH_BPS	(1000ULL * 1000 * 1000)
+
 #define MAX_ANALOG_CHANNELS	8
 #define MAX_SOS_SECTIONS	8
 #define MAX_GROUP_DELAY		64

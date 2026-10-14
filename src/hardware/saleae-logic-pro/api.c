@@ -464,6 +464,84 @@ static int config_list(uint32_t key, GVariant **data,
 	return SR_OK;
 }
 
+/* Can the hardware capture at this rate with these channels? */
+static gboolean samplerate_ok(const struct dev_context *devc, uint64_t rate,
+			      unsigned int n_dig, unsigned int n_ana)
+{
+	uint64_t div, d;
+
+	if (!rate || SR_MHZ(500) % rate)
+		return FALSE;
+	div = SR_MHZ(500) / rate;
+	if (!(div == 1 ||
+	      (devc->profile->logic2_init && (div == 2 || div == 4)) ||
+	      (div % 5 == 0 &&
+	       div / 5 <= (devc->profile->logic2_init ? 0xff : 0xffff))))
+		return FALSE;
+	if (n_ana) {
+		if (SR_MHZ(50) % rate)
+			return FALSE;
+		d = SR_MHZ(50) / rate;
+		if (d != 1 && d != 4 && d != 8 && d != 16 && d != 32 && d != 64)
+			return FALSE;
+	}
+
+	return rate * (n_dig + 12 * n_ana) <= MAX_BANDWIDTH_BPS;
+}
+
+/*
+ * Front ends start from any listed samplerate, but analog channels and the
+ * USB bandwidth restrict it. Instead of failing, use the closest possible
+ * rate (the highest one not above the requested rate), and tell the session
+ * via a meta packet. Returns TRUE if the rate was changed.
+ */
+static gboolean coerce_samplerate(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc = sdi->priv;
+	const struct sr_channel *ch;
+	const GSList *l;
+	unsigned int n_dig = 0, n_ana = 0, i;
+	uint64_t want, best = 0, lowest = 0;
+	char *a, *b;
+
+	for (l = sdi->channels; l; l = l->next) {
+		ch = l->data;
+		if (!ch->enabled)
+			continue;
+		if (ch->type == SR_CHANNEL_ANALOG)
+			n_ana++;
+		else
+			n_dig++;
+	}
+
+	want = devc->dig_samplerate;
+	if (samplerate_ok(devc, want, n_dig, n_ana))
+		return FALSE;
+
+	for (i = 0; i < ARRAY_SIZE(samplerates); i++) {
+		if (!samplerate_ok(devc, samplerates[i], n_dig, n_ana))
+			continue;
+		if (!lowest)
+			lowest = samplerates[i];
+		if (samplerates[i] <= want)
+			best = samplerates[i];
+	}
+	if (!best)
+		best = lowest;
+	if (!best)
+		return FALSE;	/* Nothing fits; prepare() reports it. */
+
+	a = sr_samplerate_string(want);
+	b = sr_samplerate_string(best);
+	sr_warn("%s is not possible with %u digital and %u analog channels, "
+		"using %s.", a, n_dig, n_ana, b);
+	g_free(a);
+	g_free(b);
+	devc->dig_samplerate = best;
+
+	return TRUE;
+}
+
 static void free_buffers(struct dev_context *devc)
 {
 	unsigned int i;
@@ -529,6 +607,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	uint8_t *buf;
 	unsigned int i, ret;
 	uint64_t num_xfers;
+	gboolean rate_changed;
+
+	rate_changed = coerce_samplerate(sdi);
 
 	ret = saleae_logic_pro_prepare(sdi);
 	if (ret != SR_OK)
@@ -615,6 +696,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	usb_source_add(sdi->session, drvc->sr_ctx, BUF_TIMEOUT, dev_acquisition_handle, (void *)sdi);
 
 	std_session_send_df_header(sdi);
+	if (rate_changed)
+		sr_session_send_meta(sdi, SR_CONF_SAMPLERATE,
+				     g_variant_new_uint64(devc->dig_samplerate));
 
 	saleae_logic_pro_start(sdi);
 	if (ret != SR_OK)

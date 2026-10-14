@@ -42,8 +42,6 @@
 #define REG_LED_BLUE		0x11
 #define REG_STATUS		0x40
 
-/* Verified sustainable sample stream over USB 3 (bits per second); 2 Gbit/s overruns. */
-#define MAX_BANDWIDTH_BPS	(1000ULL * 1000 * 1000)
 
 static void iterate_lfsr(const struct sr_dev_inst *sdi)
 {
