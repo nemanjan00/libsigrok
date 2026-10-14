@@ -36,11 +36,33 @@
  */
 #define CONV_BUFFER_SIZE (2 * 8 * 16384 + CONV_BATCH_SIZE)
 
+struct saleae_logic_pro_profile {
+	uint16_t pid;
+	const char *model;
+	unsigned int num_channels;
+	const char *fw_name;
+	const char *bitstream_name;
+	/*
+	 * Use the init sequence of the current vendor software (Lattice FPGA
+	 * hardware). This also skips the legacy crypto handshake, which changes
+	 * the LFSR state on the host side.
+	 */
+	gboolean logic2_init;
+};
+
 struct dev_context {
+	const struct saleae_logic_pro_profile *profile;
 	unsigned int dig_channel_cnt;
 	uint16_t dig_channel_mask;
 	uint16_t dig_channel_masks[16];
 	uint64_t dig_samplerate;
+	struct sr_sw_limits limits;
+	gboolean acq_done;
+
+	uint64_t capture_ratio;
+	struct soft_trigger_logic *stl;
+	gboolean trigger_fired;
+	unsigned int unitsize;
 
 	uint32_t lfsr;
 
