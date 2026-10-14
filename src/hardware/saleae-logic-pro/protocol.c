@@ -600,26 +600,277 @@ static int set_led(const struct sr_dev_inst *sdi, uint8_t r, uint8_t g, uint8_t 
 static int configure_channels(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
-	const struct sr_channel *c;
+	struct sr_channel *c;
 	const GSList *l;
 	uint16_t mask;
+	unsigned int hw;
 
 	devc->dig_channel_cnt = 0;
 	devc->dig_channel_mask = 0;
+	devc->ana_channel_cnt = 0;
+	devc->ana_channel_mask = 0;
 	for (l = sdi->channels; l; l = l->next) {
 		c = l->data;
 		if (!c->enabled)
 			continue;
 
+		if (c->type == SR_CHANNEL_ANALOG) {
+			/* Analog channels follow the digital ones. */
+			hw = c->index - devc->profile->num_channels;
+			devc->ana_hw_index[devc->ana_channel_cnt] = hw;
+			devc->ana_channels[devc->ana_channel_cnt++] = c;
+			devc->ana_channel_mask |= 1 << hw;
+			continue;
+		}
+
 		mask = 1 << c->index;
+		devc->dig_channel_shift[devc->dig_channel_cnt] = c->index;
 		devc->dig_channel_masks[devc->dig_channel_cnt++] = mask;
 		devc->dig_channel_mask |= mask;
-
 	}
-	sr_dbg("%d channels enabled (0x%04x)",
-	       devc->dig_channel_cnt, devc->dig_channel_mask);
+	sr_dbg("%d digital channels enabled (0x%04x), %d analog (0x%02x)",
+	       devc->dig_channel_cnt, devc->dig_channel_mask,
+	       devc->ana_channel_cnt, devc->ana_channel_mask);
 
 	return SR_OK;
+}
+
+/*
+ * Analog calibration.
+ *
+ * The vendor software keeps a per-device calibration file (JSON) with the
+ * full-scale voltage range of every analog channel (codes -2048..+2047) and,
+ * per analog samplerate, IIR filters (cascaded biquads, unity DC gain) that
+ * flatten the front-end frequency response. It is looked up as firmware
+ * resource "saleae-logic-pro-<device id>.cal", then in Logic 2's cache
+ * ($XDG_CONFIG_HOME/Logic/calibrations/<device id>-*.cal). Without one,
+ * nominal ranges are used and no filtering is done.
+ */
+
+#define NOMINAL_VMIN	(-10.45f)
+#define NOMINAL_VMAX	(10.65f)
+
+/* Find "key": at or after p, return a pointer just past the colon. */
+static const char *json_key(const char *p, const char *key)
+{
+	char pat[64];
+
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	if (!p || !(p = strstr(p, pat)))
+		return NULL;
+	p += strlen(pat);
+	while (*p == ' ' || *p == ':')
+		p++;
+
+	return p;
+}
+
+static const char *json_double(const char *p, const char *key, double *val)
+{
+	char *end;
+
+	if (!(p = json_key(p, key)))
+		return NULL;
+	*val = g_ascii_strtod(p, &end);
+
+	return end == p ? NULL : end;
+}
+
+static char *load_calibration_file(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc = sdi->priv;
+	struct drv_context *drvc = sdi->driver->context;
+	char name[64], prefix[32], *buf, *text, *best;
+	const char *entry;
+	size_t size;
+	gchar *dir, *path;
+	GDir *gdir;
+
+	/* Logic 2 cache first: newest "<id>-<timestamp>-<n>.cal" wins. */
+	snprintf(prefix, sizeof(prefix), "%" PRIu64 "-", devc->device_id);
+	dir = g_build_filename(g_get_user_config_dir(), "Logic",
+			       "calibrations", NULL);
+	best = NULL;
+	if ((gdir = g_dir_open(dir, 0, NULL))) {
+		while ((entry = g_dir_read_name(gdir))) {
+			if (!g_str_has_prefix(entry, prefix) ||
+			    !g_str_has_suffix(entry, ".cal"))
+				continue;
+			if (!best || strcmp(entry, best) > 0) {
+				g_free(best);
+				best = g_strdup(entry);
+			}
+		}
+		g_dir_close(gdir);
+	}
+	text = NULL;
+	if (best) {
+		path = g_build_filename(dir, best, NULL);
+		if (g_file_get_contents(path, &text, NULL, NULL))
+			sr_info("Using analog calibration '%s'.", path);
+		g_free(path);
+		g_free(best);
+	}
+	g_free(dir);
+	if (text)
+		return text;
+
+	/* Then a copy in the firmware directories. */
+	snprintf(name, sizeof(name), "saleae-logic-pro-%" PRIu64 ".cal",
+		 devc->device_id);
+	buf = sr_resource_load(drvc->sr_ctx, SR_RESOURCE_FIRMWARE, name,
+			       &size, 1024 * 1024);
+	if (!buf)
+		return NULL;
+	text = g_strndup(buf, size);
+	g_free(buf);
+	sr_info("Using analog calibration '%s'.", name);
+
+	return text;
+}
+
+static void update_scale(struct dev_context *devc)
+{
+	struct analog_cal *cal;
+	unsigned int i;
+
+	for (i = 0; i < MAX_ANALOG_CHANNELS; i++) {
+		cal = &devc->cal[i];
+		cal->scale = (cal->vmax - cal->vmin) / 4095;
+		cal->offset = cal->vmin + 2048 * cal->scale;
+	}
+}
+
+SR_PRIV void saleae_logic_pro_load_calibration(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc = sdi->priv;
+	const char *p;
+	double vmin, vmax;
+	unsigned int i;
+
+	g_free(devc->cal_json);
+	devc->cal_json = NULL;
+	for (i = 0; i < MAX_ANALOG_CHANNELS; i++) {
+		devc->cal[i].vmin = NOMINAL_VMIN;
+		devc->cal[i].vmax = NOMINAL_VMAX;
+		devc->cal[i].num_sos = 0;
+		devc->cal[i].group_delay = 0;
+	}
+	if (!devc->profile->num_analog)
+		return;
+
+	devc->cal_json = load_calibration_file(sdi);
+	if (!devc->cal_json) {
+		update_scale(devc);
+		sr_warn("No analog calibration for device %" PRIu64 ", using "
+			"nominal ranges. Copy Logic 2's calibration file to the "
+			"firmware directory as saleae-logic-pro-%" PRIu64 ".cal.",
+			devc->device_id, devc->device_id);
+		return;
+	}
+
+	p = json_key(devc->cal_json, "fullScaleVoltageRanges");
+	for (i = 0; p && i < devc->profile->num_analog; i++) {
+		if (!(p = json_double(p, "minimumVoltage", &vmin)) ||
+		    !(p = json_double(p, "maximumVoltage", &vmax)))
+			break;
+		devc->cal[i].vmin = vmin;
+		devc->cal[i].vmax = vmax;
+		sr_dbg("A%u: %.4f .. %.4f V", i, vmin, vmax);
+	}
+	if (i != devc->profile->num_analog)
+		sr_warn("Incomplete full-scale ranges in calibration file.");
+	update_scale(devc);
+}
+
+/* Load the frequency-response filters for one analog samplerate. */
+static void select_calibration_rate(struct dev_context *devc, uint64_t rate)
+{
+	static const char *const coef[] = { "b0", "b1", "b2", "a1", "a2" };
+	const char *p, *close;
+	char key[32], *end;
+	double v[5];
+	unsigned int i, j, k;
+	struct analog_cal *cal;
+
+	for (i = 0; i < MAX_ANALOG_CHANNELS; i++) {
+		devc->cal[i].num_sos = 0;
+		devc->cal[i].group_delay = 0;
+	}
+	if (!devc->cal_json)
+		return;
+
+	snprintf(key, sizeof(key), "%" PRIu64, rate);
+	p = json_key(json_key(devc->cal_json, "calibrationSets"), key);
+	if (!p) {
+		sr_warn("No calibration filters for %" PRIu64 " Hz.", rate);
+		return;
+	}
+
+	for (i = 0; i < devc->profile->num_analog; i++) {
+		cal = &devc->cal[i];
+		if (!(p = json_key(p, "groupDelay")))
+			break;
+		cal->group_delay = MIN(strtoul(p, &end, 10), MAX_GROUP_DELAY);
+		if (!(p = json_key(p, "df1SosCoefficients")) ||
+		    !(close = strchr(p, ']')))
+			break;
+		for (j = 0; j < MAX_SOS_SECTIONS; j++) {
+			const char *q = strstr(p, "\"b0\"");
+			if (!q || q > close)
+				break;
+			for (k = 0; k < 5; k++)
+				if (!(q = json_double(q, coef[k], &v[k])))
+					break;
+			if (k != 5)
+				break;
+			cal->sos[j] = (struct sos){ v[0], v[1], v[2], v[3], v[4],
+						    0, 0, 0, 0 };
+			p = q;
+		}
+		cal->num_sos = j;
+		p = close;
+	}
+	sr_dbg("Loaded calibration filters for %" PRIu64 " Hz.", rate);
+}
+
+/* Apply the frequency-response filter to a block of voltages, in place. */
+static void filter_block(struct analog_cal *cal, float *v, size_t n)
+{
+	unsigned int i;
+	size_t k;
+	struct sos *s;
+	float x, y, x1, x2, y1, y2;
+
+	if (!n || !cal->num_sos)
+		return;
+
+	if (!cal->primed) {
+		/* Start each section in its DC steady state: no transient. */
+		x = v[0];
+		for (i = 0; i < cal->num_sos; i++) {
+			s = &cal->sos[i];
+			s->x1 = s->x2 = x;
+			x *= (s->b0 + s->b1 + s->b2) / (1 + s->a1 + s->a2);
+			s->y1 = s->y2 = x;
+		}
+		cal->primed = TRUE;
+	}
+
+	/* Section by section over the whole block (cache friendly). */
+	for (i = 0; i < cal->num_sos; i++) {
+		s = &cal->sos[i];
+		x1 = s->x1; x2 = s->x2; y1 = s->y1; y2 = s->y2;
+		for (k = 0; k < n; k++) {
+			x = v[k];
+			y = s->b0 * x + s->b1 * x1 + s->b2 * x2 -
+			    s->a1 * y1 - s->a2 * y2;
+			x2 = x1; x1 = x;
+			y2 = y1; y1 = y;
+			v[k] = y;
+		}
+		s->x1 = x1; s->x2 = x2; s->y1 = y1; s->y2 = y2;
+	}
 }
 
 /*
@@ -678,6 +929,11 @@ SR_PRIV int saleae_logic_pro_init(const struct sr_dev_inst *sdi)
 	ret = read_eeprom_serial(sdi, serial);
 	if (ret != SR_OK)
 		return ret;
+	devc->device_id = 0;
+	for (i = 7; i >= 0; i--)
+		devc->device_id = (devc->device_id << 8) | serial[i];
+	sr_info("Device ID: 0x%016" PRIx64 ".", devc->device_id);
+	saleae_logic_pro_load_calibration(sdi);
 
 	/* Check if we need to upload the bitstream. */
 	ret = read_reg(sdi, 0x7f, &reg_val);
@@ -818,7 +1074,8 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 	};
 	uint8_t start_req[] = {0x00, 0x01};
 	uint8_t start_rsp[2] = {};
-	uint64_t rate, div, bw, throttle;
+	uint64_t rate, div, dec, bw, throttle, ana_div;
+	unsigned int i;
 
 	configure_channels(sdi);
 
@@ -827,14 +1084,18 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 	regs_config[4][1] = devc->dig_channel_mask >> 8;
 	regs_config[9][1] = devc->dig_channel_cnt;
 
-	if (devc->dig_channel_cnt == 0) {
+	if (devc->dig_channel_cnt == 0 && devc->ana_channel_cnt == 0) {
 		sr_err("No channels enabled.");
 		return SR_ERR_ARG;
 	}
 
 	/*
-	 * Digital samplerate: the FPGA samples at 500 MHz, decimated by
-	 * 5 * div (16-bit div in regs 0x0b/0x0c), or not at all for div 0.
+	 * Digital samplerate, from a 500 MHz sample clock:
+	 * - legacy bitstream: decimation by 5 * n, 16-bit n in regs
+	 *   0x0b/0x0c, or n = 0 for 500 MHz;
+	 * - Logic 2 bitstream: either by 5 * n with an 8-bit n in reg 0x0b,
+	 *   or (reg 0x0b = 0) by 2^dec with dec in reg 0x1a for 500, 250
+	 *   and 125 MHz.
 	 */
 	rate = devc->dig_samplerate;
 	if (!rate || SR_MHZ(500) % rate) {
@@ -842,9 +1103,14 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 		return SR_ERR_ARG;
 	}
 	div = SR_MHZ(500) / rate;
-	if (div == 1) {
+	dec = 0;
+	if (devc->profile->logic2_init && (div == 1 || div == 2 || div == 4)) {
+		dec = div == 1 ? 0 : div == 2 ? 1 : 2;
 		div = 0;
-	} else if (div % 5 || div / 5 > 0xffff) {
+	} else if (div == 1) {
+		div = 0;
+	} else if (div % 5 ||
+		   div / 5 > (devc->profile->logic2_init ? 0xff : 0xffff)) {
 		sr_err("Unsupported samplerate %" PRIu64 ".", rate);
 		return SR_ERR_ARG;
 	} else {
@@ -854,36 +1120,86 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 	regs_config[7][1] = div >> 8;
 
 	/*
-	 * USB bandwidth throttle, as computed by the vendor software:
-	 * 100e6 / (bits per second / 32), saturated to 8 bits.
+	 * Analog channels run at the same samplerate as the digital ones:
+	 * 50 MHz / ana_div, for the rates the vendor calibrates (50 MHz down
+	 * to 781.25 kHz). The register holds ana_div, or ana_div - 1 below 4.
 	 */
-	bw = rate * devc->dig_channel_cnt;
+	ana_div = 0;
+	if (devc->ana_channel_cnt) {
+		ana_div = SR_MHZ(50) / rate;
+		if (SR_MHZ(50) % rate || (ana_div != 1 && (ana_div < 4 ||
+		    ana_div > 64 || (ana_div & (ana_div - 1))))) {
+			sr_err("Analog channels need one of the samplerates "
+			       "781.25 kHz, 1.5625/3.125/6.25/12.5/50 MHz.");
+			return SR_ERR_ARG;
+		}
+		if (ana_div < 4)
+			ana_div--;
+	}
+
+	devc->ana_gd = 0;
+
+	/*
+	 * Stream frame (vendor DeviceCalculateMixRate() for equal rates):
+	 * per 32 samples, one 32-bit word per digital channel, followed by
+	 * 4 rounds of one group per analog channel (ascending), each group
+	 * 3 words holding 8 x 12-bit samples. Without digital channels a
+	 * frame is a single round (8 samples).
+	 */
+	devc->frame_dig_words = devc->dig_channel_cnt;
+	if (devc->dig_channel_cnt) {
+		devc->frame_samples = 32;
+		devc->frame_ana_words = 12 * devc->ana_channel_cnt;
+	} else {
+		devc->frame_samples = 8;
+		devc->frame_ana_words = 3 * devc->ana_channel_cnt;
+	}
+
+	/*
+	 * USB bandwidth throttle, as computed by the vendor software:
+	 * ceil(100e6 / (bits per second / 32)), saturated to 8 bits.
+	 */
+	bw = rate * (devc->dig_channel_cnt + 12 * devc->ana_channel_cnt);
+	devc->stream_bps = bw;
 	if (bw > MAX_BANDWIDTH_BPS) {
-		sr_err("Samplerate too high for %u channels (max %" PRIu64
-		       " bit/s over USB).", devc->dig_channel_cnt,
+		sr_err("Samplerate too high for %u digital and %u analog "
+		       "channels (max %" PRIu64 " bit/s over USB).",
+		       devc->dig_channel_cnt, devc->ana_channel_cnt,
 		       (uint64_t)MAX_BANDWIDTH_BPS);
 		return SR_ERR_ARG;
 	}
-	throttle = SR_MHZ(100) / (bw / 32);
+	/* Rounded up, as the vendor does (5.33 -> 6 for 50 MS/s analog). */
+	throttle = (SR_MHZ(100) * 32 + bw - 1) / bw;
 	regs_config[12][1] = MIN(throttle, 0xff);
 
 	if (devc->profile->logic2_init) {
-		/* Exact register block Logic 2 writes for a digital capture. */
+		/* Register block as Logic 2 writes it for a capture. */
 		uint8_t regs_l2[][2] = {
 			{0x00, 0x00},
-			{0x08, 0x00},			/* Analog channel mask */
+			{0x08, devc->ana_channel_mask},	/* Analog channel mask */
 			{0x06, devc->dig_channel_mask},	/* Digital channel mask */
-			{0x0a, 0x00},			/* Analog divider */
+			{0x0a, ana_div},		/* Analog divider */
 			{0x1b, 0x00},
-			{0x0b, regs_config[6][1]},	/* Digital divider LSB */
-			{0x0c, regs_config[7][1]},	/* Digital divider MSB */
-			{0x1a, 0x00},
-			{0x0d, 0x00},			/* Analog mux */
-			{0x0e, devc->dig_channel_cnt},	/* Digital mux */
+			{0x0b, devc->dig_channel_cnt ? regs_config[6][1] : 0},
+			{0x0c, 0x00},
+			{0x1a, devc->dig_channel_cnt ? dec : 0},
+			{0x0d, devc->frame_ana_words},	/* Analog mux */
+			{0x0e, devc->frame_dig_words},	/* Digital mux */
 			{0x12, 0x04},			/* IO voltage option */
 			{0x13, 0x00},
 			{0x14, regs_config[12][1]},	/* USB throttle */
 		};
+		if (devc->ana_channel_cnt) {
+			select_calibration_rate(devc, rate);
+			/*
+			 * Compensate the filter delay only when there is
+			 * logic data to align the analog data with.
+			 */
+			for (i = 0; devc->dig_channel_cnt &&
+			     i < devc->ana_channel_cnt; i++)
+				devc->ana_gd = MAX(devc->ana_gd,
+					devc->cal[devc->ana_hw_index[i]].group_delay);
+		}
 		write_reg(sdi, 0x15, 0x03);
 		write_regs(sdi, ARRAY_AND_SIZE(regs_unknown));
 		write_regs(sdi, ARRAY_AND_SIZE(regs_l2));
@@ -903,9 +1219,13 @@ SR_PRIV int saleae_logic_pro_prepare(const struct sr_dev_inst *sdi)
 SR_PRIV int saleae_logic_pro_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
+	unsigned int i;
 
-	devc->conv_size = 0;
-	devc->batch_index = 0;
+	devc->carry_len = 0;
+	devc->samples_in = 0;
+	devc->emit_pos = 0;
+	for (i = 0; i < MAX_ANALOG_CHANNELS; i++)
+		devc->cal[i].primed = FALSE;
 
 	write_reg(sdi, 0x00, 0x01);
 
@@ -914,6 +1234,7 @@ SR_PRIV int saleae_logic_pro_start(const struct sr_dev_inst *sdi)
 
 SR_PRIV int saleae_logic_pro_stop(const struct sr_dev_inst *sdi)
 {
+	struct dev_context *devc = sdi->priv;
 	uint8_t stop_req[] = {0x00, 0x02};
 	uint8_t stop_rsp[2] = {};
 	uint8_t status;
@@ -923,6 +1244,11 @@ SR_PRIV int saleae_logic_pro_stop(const struct sr_dev_inst *sdi)
 	transact(sdi, stop_req, sizeof(stop_req), stop_rsp, sizeof(stop_rsp));
 
 	ret = read_reg(sdi, 0x40, &status);
+	if (devc->profile->logic2_init) {
+		/* Like Logic 2: power the ADC down again after a capture. */
+		write_reg(sdi, 0x15, 0x00);
+		write_adc(sdi, 0x0f, 0x0100);
+	}
 	if (ret != SR_OK)
 		return ret;
 	/* Bit 7 is set in normal operation with the Logic 2 bitstream. */
@@ -951,48 +1277,126 @@ static void saleae_logic_pro_send_data(const struct sr_dev_inst *sdi,
 	sr_session_send(sdi, &packet);
 }
 
+static void saleae_logic_pro_send_analog(const struct sr_dev_inst *sdi,
+					 struct sr_channel *ch, float *data,
+					 size_t num_samples)
+{
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
+	struct sr_datafeed_packet packet;
+
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 3);
+	analog.meaning->channels = g_slist_append(NULL, ch);
+	analog.meaning->mq = SR_MQ_VOLTAGE;
+	analog.meaning->unit = SR_UNIT_VOLT;
+	analog.meaning->mqflags = 0;
+	analog.num_samples = num_samples;
+	analog.data = data;
+	packet.type = SR_DF_ANALOG;
+	packet.payload = &analog;
+	sr_session_send(sdi, &packet);
+	g_slist_free(analog.meaning->channels);
+}
+
 /*
- * One batch from the device consists of 32 samples per active digital channel.
- * This stream of batches is packed into USB packets with 16384 bytes each.
+ * nibble_lanes[n]: the 4 bits of n (MSB = earliest sample) spread over four
+ * 16-bit lanes (lane 0 = earliest sample in memory order), each 0 or 1.
  */
-static void saleae_logic_pro_convert_data(const struct sr_dev_inst *sdi,
-					 const uint32_t *src, size_t srccnt)
+static const uint64_t nibble_lanes[16] = {
+#if G_BYTE_ORDER == G_LITTLE_ENDIAN
+#define L(n) ((((n) >> 3) & 1ULL) | ((((n) >> 2) & 1ULL) << 16) | \
+	      ((((n) >> 1) & 1ULL) << 32) | (((n) & 1ULL) << 48))
+#else
+#define L(n) (((((n) >> 3) & 1ULL) << 48) | ((((n) >> 2) & 1ULL) << 32) | \
+	      ((((n) >> 1) & 1ULL) << 16) | ((n) & 1ULL))
+#endif
+	L(0), L(1), L(2), L(3), L(4), L(5), L(6), L(7),
+	L(8), L(9), L(10), L(11), L(12), L(13), L(14), L(15),
+#undef L
+};
+
+/*
+ * Convert complete stream frames (see saleae_logic_pro_prepare()) into
+ * 16-bit logic samples and per-channel analog voltages. Words of a partial
+ * frame are carried over to the next transfer. Returns the number of
+ * sample periods converted.
+ */
+static size_t saleae_logic_pro_convert_data(const struct sr_dev_inst *sdi,
+					    size_t nwords)
 {
 	struct dev_context *devc = sdi->priv;
-	uint8_t *dst = devc->conv_buffer;
-	uint32_t samples;
-	uint16_t channel_mask;
-	unsigned int sample_index, batch_index;
-	uint16_t *dst_batch;
+	unsigned int frame_words, n_dig, n_ana, w, i, k, grp, ch;
+	uint32_t word, *buf;
+	size_t f, nframes, base;
+	uint16_t *logic;
+	int code;
 
-	/* Copy partial batch to the beginning. */
-	memcpy(dst, dst + devc->conv_size, CONV_BATCH_SIZE);
-	/* Reset converted size. */
-	devc->conv_size = 0;
+	n_dig = devc->frame_dig_words;
+	n_ana = devc->ana_channel_cnt;
+	frame_words = n_dig + devc->frame_ana_words;
 
-	batch_index = devc->batch_index;
-	while (srccnt--) {
-		samples = *src++;
-		dst_batch = (uint16_t*)dst;
+	/* work[] holds the carried-over words followed by the new ones. */
+	buf = devc->work;
+	nframes = nwords / frame_words;
 
-		/* First index of the batch. */
-		if (batch_index == 0)
-			memset(dst, 0, CONV_BATCH_SIZE);
+	logic = devc->logic_buf + devc->ana_gd;
+	for (f = 0; f < nframes; f++) {
+		const uint32_t *fr = buf + f * frame_words;
+		base = f * devc->frame_samples;
 
-		/* Convert one channel. */
-		channel_mask = devc->dig_channel_masks[batch_index];
-		for (sample_index = 0; sample_index <= 31; sample_index++)
-			if ((samples >> (31 - sample_index)) & 1)
-				dst_batch[sample_index] |= channel_mask;
+		if (n_dig) {
+			/* 32 samples, MSB first, as 8 groups of 4 x 16 bits. */
+			uint64_t acc[8] = { 0 };
+			for (w = 0; w < n_dig; w++) {
+				word = fr[w];
+				for (i = 0; i < 8; i++)
+					acc[i] |= nibble_lanes[(word >> (28 - 4 * i)) & 0xf]
+						  << devc->dig_channel_shift[w];
+			}
+			memcpy(logic + base, acc, sizeof(acc));
+		}
 
-		/* Last index of the batch. */
-		if (++batch_index == devc->dig_channel_cnt) {
-			devc->conv_size += CONV_BATCH_SIZE;
-			batch_index = 0;
-			dst += CONV_BATCH_SIZE;
+		/*
+		 * Analog groups: 3 little-endian words = 8 x 12-bit two's
+		 * complement samples, LSB first. Convert to volts here, filter
+		 * per channel below.
+		 */
+		for (grp = 0; grp * 3 < devc->frame_ana_words; grp++) {
+			const uint32_t *g = fr + n_dig + grp * 3;
+			uint32_t raw[8];
+			struct analog_cal *cal;
+			float *dst;
+
+			ch = grp % n_ana;
+			cal = &devc->cal[devc->ana_hw_index[ch]];
+			dst = devc->ana_buf[ch] + base + (grp / n_ana) * 8;
+			raw[0] = g[0];
+			raw[1] = g[0] >> 12;
+			raw[2] = (g[0] >> 24) | (g[1] << 8);
+			raw[3] = g[1] >> 4;
+			raw[4] = g[1] >> 16;
+			raw[5] = (g[1] >> 28) | (g[2] << 4);
+			raw[6] = g[2] >> 8;
+			raw[7] = g[2] >> 20;
+			for (k = 0; k < 8; k++) {
+				/* Sign-extend the low 12 bits. */
+				code = (int32_t)(raw[k] << 20) >> 20;
+				dst[k] = code * cal->scale + cal->offset;
+			}
 		}
 	}
-	devc->batch_index = batch_index;
+	/* Keep the words of a partial frame for the next transfer. */
+	devc->carry_len = nwords - nframes * frame_words;
+	memmove(buf, buf + nframes * frame_words,
+		devc->carry_len * sizeof(uint32_t));
+
+	for (ch = 0; ch < n_ana; ch++)
+		filter_block(&devc->cal[devc->ana_hw_index[ch]],
+			     devc->ana_buf[ch], nframes * devc->frame_samples);
+
+	return nframes * devc->frame_samples;
 }
 
 static void free_transfer(struct libusb_transfer *transfer)
@@ -1016,8 +1420,9 @@ SR_PRIV void LIBUSB_CALL saleae_logic_pro_receive_data(struct libusb_transfer *t
 {
 	const struct sr_dev_inst *sdi = transfer->user_data;
 	struct dev_context *devc = sdi->priv;
-	uint64_t remain;
-	size_t samples, i;
+	uint64_t remain, in0, avail;
+	size_t block, samples, skip, lpos, nwords, i;
+	unsigned int c, gd;
 	uint8_t *data;
 	int trigger_offset, pre_trigger_samples;
 	gboolean exceeded;
@@ -1041,50 +1446,81 @@ SR_PRIV void LIBUSB_CALL saleae_logic_pro_receive_data(struct libusb_transfer *t
 		return;
 	}
 
-	saleae_logic_pro_convert_data(sdi, (uint32_t *)transfer->buffer,
-				      transfer->actual_length / 4);
-
-	/* The conversion yields 16-bit samples; pack to the logic unitsize. */
-	data = devc->conv_buffer;
-	samples = devc->conv_size / 2;
-	if (devc->unitsize == 1) {
-		for (i = 0; i < samples; i++)
-			data[i] = ((uint16_t *)data)[i];
-	}
-
-	if (!devc->trigger_fired && samples) {
-		trigger_offset = soft_trigger_logic_check(devc->stl, data,
-			samples * devc->unitsize, &pre_trigger_samples);
-		if (trigger_offset < 0) {
-			samples = 0;
-		} else {
-			/* Pre-trigger samples were sent by the soft trigger. */
-			sr_sw_limits_update_samples_read(&devc->limits,
-							 pre_trigger_samples);
-			devc->trigger_fired = TRUE;
-			data += trigger_offset * devc->unitsize;
-			samples -= trigger_offset;
-		}
-	}
-
-	sr_sw_limits_get_remain(&devc->limits, &remain, NULL, NULL, &exceeded);
-	if (devc->limits.limit_samples && samples > remain)
-		samples = remain;
-	if (samples) {
-		saleae_logic_pro_send_data(sdi, data, samples * devc->unitsize,
-					   devc->unitsize);
-		sr_sw_limits_update_samples_read(&devc->limits, samples);
-	}
-
-	if (sr_sw_limits_check(&devc->limits)) {
-		devc->acq_done = TRUE;
-		free_transfer(transfer);
-		return;
-	}
-
+	/*
+	 * Copy the data out and give the buffer back to the device right
+	 * away: at high analog rates the device FIFO overruns if the queue of
+	 * transfers runs dry while we are converting.
+	 */
+	nwords = MIN((size_t)transfer->actual_length, devc->xfer_size) / 4;
+	memcpy(devc->work + devc->carry_len, transfer->buffer,
+	       nwords * sizeof(uint32_t));
+	nwords += devc->carry_len;
 	if ((ret = libusb_submit_transfer(transfer)) != LIBUSB_SUCCESS) {
 		sr_err("Failed to resubmit transfer: %s.", libusb_error_name(ret));
 		devc->acq_done = TRUE;
 		free_transfer(transfer);
 	}
+
+	block = saleae_logic_pro_convert_data(sdi, nwords);
+
+	/*
+	 * Logic and analog are emitted over one aligned range per block, with
+	 * equal sample counts. The analog calibration filter delays its output
+	 * by ana_gd samples, so the logic stream is delayed by the same amount:
+	 * aligned sample n is logic sample n and analog filter output n + gd.
+	 */
+	gd = devc->ana_gd;
+	in0 = devc->samples_in;
+	avail = in0 + block > gd ? in0 + block - gd : 0;
+	samples = avail - devc->emit_pos;
+	lpos = devc->emit_pos + gd - in0;	/* Also the index into ana_buf. */
+
+	/* Logic samples are converted as 16 bits; pack to the unitsize. */
+	data = (uint8_t *)(devc->logic_buf + lpos);
+	if (devc->dig_channel_cnt && devc->unitsize == 1) {
+		for (i = 0; i < samples; i++)
+			data[i] = devc->logic_buf[lpos + i];
+	}
+
+	skip = 0;
+	if (!devc->trigger_fired && samples) {
+		trigger_offset = soft_trigger_logic_check(devc->stl, data,
+			samples * devc->unitsize, &pre_trigger_samples);
+		if (trigger_offset < 0) {
+			skip = samples;
+		} else {
+			/* Pre-trigger samples were sent by the soft trigger. */
+			sr_sw_limits_update_samples_read(&devc->limits,
+							 pre_trigger_samples);
+			devc->trigger_fired = TRUE;
+			skip = trigger_offset;
+		}
+	}
+	data += skip * devc->unitsize;
+	samples -= skip;
+
+	sr_sw_limits_get_remain(&devc->limits, &remain, NULL, NULL, &exceeded);
+	if (devc->limits.limit_samples && samples > remain)
+		samples = remain;
+	if (samples) {
+		if (devc->dig_channel_cnt)
+			saleae_logic_pro_send_data(sdi, data,
+				samples * devc->unitsize, devc->unitsize);
+		for (c = 0; c < devc->ana_channel_cnt; c++)
+			saleae_logic_pro_send_analog(sdi, devc->ana_channels[c],
+				devc->ana_buf[c] + lpos + skip,
+				samples);
+		sr_sw_limits_update_samples_read(&devc->limits, samples);
+	}
+
+	devc->emit_pos = avail;
+	devc->samples_in += block;
+	/* Keep the last gd logic samples (not yet emitted) as history. */
+	if (gd)
+		memmove(devc->logic_buf, devc->logic_buf + block,
+			gd * sizeof(uint16_t));
+
+	/* Transfers still queued are reaped once acq_done is seen. */
+	if (sr_sw_limits_check(&devc->limits))
+		devc->acq_done = TRUE;
 }

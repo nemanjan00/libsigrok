@@ -22,8 +22,6 @@
 #include <string.h>
 #include "protocol.h"
 
-#define BUF_COUNT 512
-#define BUF_SIZE (16 * 1024)
 #define BUF_TIMEOUT 1000
 
 static const uint32_t scanopts[] = {
@@ -58,10 +56,10 @@ static const char *channel_names[] = {
 };
 
 static const struct saleae_logic_pro_profile profiles[] = {
-	{ 0x1005, "Logic Pro 8", 8,
+	{ 0x1005, "Logic Pro 8", 8, 8,
 	  "saleae-logicpro8-logic2-fx3.fw",
 	  "saleae-logicpro8-logic2-fpga.bitstream", TRUE },
-	{ 0x1006, "Logic Pro 16", 16,
+	{ 0x1006, "Logic Pro 16", 16, 0,
 	  "saleae-logicpro16-fx3.fw", "saleae-logicpro16-fpga.bitstream",
 	  FALSE },
 };
@@ -80,25 +78,28 @@ static const struct saleae_logic_pro_profile *find_profile(uint16_t vid, uint16_
 }
 
 /*
- * The digital sample clock is 500 MHz divided by (5 * n), or the full
- * 500 MHz. See saleae_logic_pro_prepare() for the register encoding.
+ * Digital rates as offered by Logic 2 (500 MHz / (5 * n) with 8-bit n, or
+ * 500/250/125 MHz), plus the analog rates; see saleae_logic_pro_prepare().
+ * Rates marked (a) also allow analog channels.
  */
 static const uint64_t samplerates[] = {
-	SR_KHZ(10),
-	SR_KHZ(20),
-	SR_KHZ(50),
-	SR_KHZ(100),
-	SR_KHZ(200),
-	SR_KHZ(500),
+	SR_HZ(781250),		/* (a) */
 	SR_MHZ(1),
+	SR_HZ(1562500),		/* (a) */
 	SR_MHZ(2),
 	SR_KHZ(2500),
+	SR_HZ(3125000),		/* (a) */
+	SR_MHZ(4),
 	SR_MHZ(5),
+	SR_HZ(6250000),		/* (a) */
 	SR_MHZ(10),
+	SR_HZ(12500000),	/* (a) */
 	SR_MHZ(20),
 	SR_MHZ(25),
-	SR_MHZ(50),
+	SR_MHZ(50),		/* (a) */
 	SR_MHZ(100),
+	SR_MHZ(125),
+	SR_MHZ(250),
 	SR_MHZ(500),
 };
 
@@ -313,6 +314,12 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		for (unsigned int j = 0; j < prof->num_channels; j++)
 			sr_channel_new(sdi, j, SR_CHANNEL_LOGIC, TRUE,
 				       channel_names[j]);
+		for (unsigned int j = 0; j < prof->num_analog; j++) {
+			char name[16];
+			snprintf(name, sizeof(name), "A%u", j);
+			sr_channel_new(sdi, prof->num_channels + j,
+				       SR_CHANNEL_ANALOG, FALSE, name);
+		}
 
 		sr_dbg("Found a %s device.", prof->model);
 		sdi->status = SR_ST_INACTIVE;
@@ -457,6 +464,30 @@ static int config_list(uint32_t key, GVariant **data,
 	return SR_OK;
 }
 
+static void free_buffers(struct dev_context *devc)
+{
+	unsigned int i;
+
+	g_free(devc->logic_buf);
+	devc->logic_buf = NULL;
+	g_free(devc->work);
+	devc->work = NULL;
+	for (i = 0; i < MAX_ANALOG_CHANNELS; i++) {
+		g_free(devc->ana_buf[i]);
+		devc->ana_buf[i] = NULL;
+	}
+}
+
+static void clear_helper(struct dev_context *devc)
+{
+	g_free(devc->cal_json);
+}
+
+static int dev_clear(const struct sr_dev_driver *di)
+{
+	return std_dev_clear_with_callback(di, (std_dev_clear_callback)clear_helper);
+}
+
 static void dev_acquisition_abort(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
@@ -497,6 +528,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	struct sr_trigger *trigger;
 	uint8_t *buf;
 	unsigned int i, ret;
+	uint64_t num_xfers;
 
 	ret = saleae_logic_pro_prepare(sdi);
 	if (ret != SR_OK)
@@ -507,7 +539,27 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	/* The stream endpoint may be halted after an aborted session. */
 	libusb_clear_halt(usb->devhdl, 2 | LIBUSB_ENDPOINT_IN);
 
-	devc->conv_buffer = g_malloc(CONV_BUFFER_SIZE);
+	/*
+	 * Conversion buffers: one transfer plus carried-over words, at most
+	 * one sample period per frame sample.
+	 */
+	/* ~10 ms of data per transfer, a multiple of 16 KiB. */
+	devc->xfer_size = devc->stream_bps / 8 / 100;
+	devc->xfer_size = CLAMP(devc->xfer_size, XFER_MIN_SIZE, XFER_MAX_SIZE);
+	devc->xfer_size -= devc->xfer_size % XFER_MIN_SIZE;
+	/* Enough queued transfers for ~0.4 s. */
+	num_xfers = devc->stream_bps / 8 * 4 / 10 / devc->xfer_size;
+	num_xfers = CLAMP(num_xfers, XFER_MIN_COUNT, XFER_MAX_COUNT);
+
+	devc->buf_samples = ((devc->xfer_size / 4 + MAX_FRAME_WORDS) /
+		(devc->frame_dig_words + devc->frame_ana_words) + 1) *
+		devc->frame_samples;
+	/* Plus room for the logic delay line (analog filter group delay). */
+	devc->logic_buf = g_malloc0((devc->buf_samples + MAX_GROUP_DELAY) *
+				    sizeof(uint16_t));
+	devc->work = g_malloc(devc->xfer_size + MAX_FRAME_WORDS * sizeof(uint32_t));
+	for (i = 0; i < devc->ana_channel_cnt; i++)
+		devc->ana_buf[i] = g_malloc0(devc->buf_samples * sizeof(float));
 	devc->acq_done = FALSE;
 	devc->submitted_transfers = 0;
 	sr_sw_limits_acquisition_start(&devc->limits);
@@ -518,25 +570,35 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	devc->stl = NULL;
 	if ((trigger = sr_session_trigger_get(sdi->session))) {
 		int pre_trigger_samples = 0;
+		if (!devc->dig_channel_cnt) {
+			sr_err("Triggers need at least one digital channel.");
+			free_buffers(devc);
+			return SR_ERR_ARG;
+		}
 		if (devc->limits.limit_samples)
 			pre_trigger_samples = devc->capture_ratio *
 				devc->limits.limit_samples / 100;
+		if (pre_trigger_samples && devc->ana_channel_cnt) {
+			sr_warn("Pre-trigger data is not supported with analog "
+				"channels; capture starts at the trigger.");
+			pre_trigger_samples = 0;
+		}
 		devc->stl = soft_trigger_logic_new(sdi, trigger,
 						   pre_trigger_samples);
 		if (!devc->stl) {
-			g_free(devc->conv_buffer);
+			free_buffers(devc);
 			return SR_ERR_MALLOC;
 		}
 		devc->trigger_fired = FALSE;
 	}
 
-	devc->num_transfers = BUF_COUNT;
-	devc->transfers = g_malloc0(sizeof(*devc->transfers) * BUF_COUNT);
+	devc->num_transfers = num_xfers;
+	devc->transfers = g_malloc0(sizeof(*devc->transfers) * num_xfers);
 	for (i = 0; i < devc->num_transfers; i++) {
-		buf = g_malloc(BUF_SIZE);
+		buf = g_malloc(devc->xfer_size);
 		transfer = libusb_alloc_transfer(0);
 		libusb_fill_bulk_transfer(transfer, usb->devhdl,
-			2 | LIBUSB_ENDPOINT_IN, buf, BUF_SIZE,
+			2 | LIBUSB_ENDPOINT_IN, buf, devc->xfer_size,
 			saleae_logic_pro_receive_data, (void *)sdi, 0);
 		if ((ret = libusb_submit_transfer(transfer)) != 0) {
 			sr_err("Failed to submit transfer: %s.",
@@ -590,8 +652,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 	g_free(devc->transfers);
 	devc->transfers = NULL;
 	devc->num_transfers = 0;
-	g_free(devc->conv_buffer);
-	devc->conv_buffer = NULL;
+	free_buffers(devc);
 	if (devc->stl) {
 		soft_trigger_logic_free(devc->stl);
 		devc->stl = NULL;
@@ -608,7 +669,7 @@ static struct sr_dev_driver saleae_logic_pro_driver_info = {
 	.cleanup = std_cleanup,
 	.scan = scan,
 	.dev_list = std_dev_list,
-	.dev_clear = std_dev_clear,
+	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
