@@ -14,9 +14,14 @@ The applet goes into the Glasgow venv; Glasgow only loads out-of-tree applets
 when told to:
 
 ```sh
-~/.local/share/gw-venv/bin/pip install -e ~/sigrok/libsigrok/la-bench
+~/.local/share/gw-venv/bin/pip install ~/sigrok/libsigrok/la-bench
 export GLASGOW_OUT_OF_TREE_APPLETS=I-am-okay-with-breaking-changes
 ```
+
+Install it as a copy, not with `pip install -e`: `la-bench/` only exists on
+`master`, so an editable install breaks whenever the checkout is on a topic
+branch. Reinstall after changing it, from a `master` checkout or an export
+(`git archive master la-bench | tar -x -C <dir>`).
 
 `la_check.py` needs numpy and runs with the system Python.
 

@@ -12,11 +12,13 @@ comes in as a merge, so each source can be followed in `git log --graph`.
 |---|---|---|
 | [sigrokproject/libsigrok](https://github.com/sigrokproject/libsigrok) `master` | upstream | merged |
 | [christianeisendle/libsigrok](https://github.com/christianeisendle/libsigrok) `master` | DreamSourceLab DSLogic: U3Pro16 support, worker thread for sample processing, optimized/fixed deinterleaving, USB error handling, buffered mode kept, continuous mode by default (16 commits) | merged |
+| [PR #170](https://github.com/sigrokproject/libsigrok/pull/170) (Christian's PR branch) | 3 commits only on the PR: API version detected from the USB product string, GPIF word-wide on USB 2.0, U3Pro16 udev rule | merged via `dslogic-u3pro32` |
+| [PR #312](https://github.com/sigrokproject/libsigrok/pull/312) (tobias-tobug) | input/feed_queue: heap buffer overflow on a crafted VCD | merged |
 | [fredzo/libsigrok](https://github.com/fredzo/libsigrok/tree/rigol-dho-support) `rigol-dho-support` ([PR #246](https://github.com/sigrokproject/libsigrok/pull/246)) | Rigol DHO800/900/1000/4000 in `rigol-ds` (`PROTOCOL_V6`) | via `rigol-mho900` |
 | branch `rigol-mho900` | Rigol MHO98 on top of PR #246, DHO/MHO memory samplerate fix, waveform-source check | merged |
 | nemanjan00 (`0e6ef292`) | fork only: `NK Technologies` IDN accepted as Rigol (the lab's MHO98) | own commit |
 | branch `dslogic-u3pro32` | DSLogic U3Pro32 support (32 channels, `2a0e:002c`), U3 threshold fix, samplerate/channel check, U3 udev rules | merged |
-| [sipeed/libsigrok](https://github.com/sipeed/libsigrok/tree/slogic-dev) `slogic-dev` | Sipeed SLogic analyzers (16U3, 32U3, Combo 8) on the shared `libslogic` core, udev rules, `std_i32_idx()` | merged |
+| [sipeed/libsigrok](https://github.com/sipeed/libsigrok/tree/slogic-dev) `slogic-dev` ([PR #275](https://github.com/sigrokproject/libsigrok/pull/275)) | Sipeed SLogic analyzers (16U3, 32U3, Combo 8) on the shared `libslogic` core, udev rules, `std_i32_idx()` | merged |
 | branch `saleae-logic-pro8` (`614918c6`) | Saleae Logic Pro 8 support with the current (Logic 2) protocol, firmware and bitstream | merged |
 
 ## Remotes
@@ -199,6 +201,11 @@ Built from DSView's `libsigrok4DSL/hardware/DSL/` (`dsl.h`, `dsl.c`).
   DSView doesn't use it either), `TO` pulses once per capture, at the trigger
   or at the start when there's none, with no configuration. Nothing to
   implement for `TI`/`TO`.
+- **API version vs. hardware:** since PR #170 the protocol version
+  (`devc->api_version`) is detected from the USB product string, so USB 2
+  DSLogics can speak V2 too. Anything that describes the U3 hardware rather
+  than the protocol (rate table, threshold scaling, samplerate limits) tests
+  `DSLOGIC_CAPS_USB30` instead.
 - **Transfers can end mid-block** (a 64-sample block is 8 bytes x enabled
   channels): e.g. with an external clock slower than the samplerate,
   transfers time out part-filled. The worker carries the cut-off bytes over
