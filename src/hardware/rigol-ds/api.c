@@ -1121,6 +1121,16 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	if (devc->data_source == DATA_SOURCE_LIVE) {
 		devc->sample_rate = analog_frame_size(sdi) /
 			(devc->timebase * devc->model->series->num_horizontal_divs);
+	} else if (protocol == PROTOCOL_V6) {
+		/* WAV:XINC? follows WAV:MODE, which is still NORM (screen
+		 * resolution) here, so ask for the acquisition rate instead. */
+		float srate;
+		ret = sr_scpi_get_float(sdi->conn, ":ACQ:SRAT?", &srate);
+		if (ret != SR_OK || srate <= 0) {
+			sr_err("Cannot get samplerate (ACQ:SRAT? failed).");
+			return SR_ERR;
+		}
+		devc->sample_rate = srate;
 	} else {
 		float xinc;
 		if (protocol < PROTOCOL_V3) {
