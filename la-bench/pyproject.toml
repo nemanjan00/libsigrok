@@ -1,0 +1,17 @@
+[project]
+name = "glasgow-la-pattern"
+version = "0.1.0"
+description = "Glasgow applet that drives known patterns for testing logic analyzers"
+requires-python = ">=3.11"
+dependencies = ["amaranth"]
+
+[project.entry-points."glasgow.applet"]
+generate-la-pattern = "glasgow_la_pattern:GenerateLAPatternApplet"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["glasgow_la_pattern"]
+py-modules = ["la_patterns"]

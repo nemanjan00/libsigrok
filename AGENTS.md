@@ -67,6 +67,13 @@ A full build currently has 8 warnings, all in untouched upstream files
 - Use the libsigrok subject style: `<driver>: <imperative summary>`, e.g.
   `saleae-logic-pro: Add Logic Pro 8 support`.
 - No AI attribution in commits (no `Co-Authored-By` or "Generated with" lines).
+## Test bench (`la-bench/`, fork only)
+
+Glasgow applet + checker for verifying logic analyzers sample by sample:
+known patterns from a Glasgow, checked against sigrok captures. See
+`la-bench/README.md`. It lives on `master` only, like this file; topic
+branches never include it.
+
 ## Branches: kept upstreamable
 
 Every feature lives on a **topic branch based on upstream `master`**, so it
@@ -200,7 +207,7 @@ mode above, triggers on low and high channels (incl. pre-trigger at
 2 s without loss, and the threshold at 1.8 V. The U3Pro16 path was not
 re-tested (no hardware).
 
-Later the same day, with `~/sigrok/la-bench` (Glasgow pattern applet +
+Later the same day, with `~/sigrok/libsigrok/la-bench` (Glasgow pattern applet +
 `la_check.py`): count/gray/prbs/walk patterns at up to 24 MHz step rate
 checked sample by sample (0 errors, buffered and continuous, 12 and 32
 channels), external clock at 1/12/24 MHz in both modes, and `TO` edges
