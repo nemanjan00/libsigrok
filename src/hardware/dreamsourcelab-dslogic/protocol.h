@@ -40,6 +40,8 @@
 
 #define NUM_CHANNELS		16
 #define NUM_CHANNELS_CH32	32
+/* One 64-sample block of every channel, the unit the sample stream comes in. */
+#define DSLOGIC_MAX_BLOCK_BYTES	(NUM_CHANNELS_CH32 * sizeof(uint64_t))
 #define NUM_TRIGGER_STAGES	16
 
 #define DSLOGIC_REQUIRED_VERSION_MAJOR_V1	1
@@ -158,6 +160,9 @@ struct dev_context {
 	struct sr_context *ctx;
 
 	uint8_t *deinterleave_buffer;
+	/* Start of a block cut off at the end of the previous transfer. */
+	uint8_t partial_block[DSLOGIC_MAX_BLOCK_BYTES];
+	size_t partial_len;
 
 	uint16_t mode;
 	uint32_t trigger_pos;
