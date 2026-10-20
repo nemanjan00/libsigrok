@@ -39,6 +39,7 @@
 #define MAX_EMPTY_TRANSFERS	(NUM_SIMUL_TRANSFERS * 2)
 
 #define NUM_CHANNELS		16
+#define NUM_CHANNELS_CH32	32
 #define NUM_TRIGGER_STAGES	16
 
 #define DSLOGIC_REQUIRED_VERSION_MAJOR_V1	1
@@ -54,8 +55,11 @@
 #define DSLOGIC_PLUS_FPGA_FIRMWARE "dreamsourcelab-dslogic-plus-fpga.fw"
 #define DSLOGIC_BASIC_FPGA_FIRMWARE "dreamsourcelab-dslogic-basic-fpga.fw"
 #define DSLOGIC_U3PRO16_FPGA_FIRMWARE "dreamsourcelab-dslogic-u3pro16-fpga.fw"
+#define DSLOGIC_U3PRO32_FPGA_FIRMWARE "dreamsourcelab-dslogic-u3pro32-fpga.fw"
 
 #define DSLOGIC_CAPS_ADF4360 (1 << 8)
+/* 32 logic channels; triggers on 16-31 go in a second config block. */
+#define DSLOGIC_CAPS_LA_CH32 (1 << 11)
 
 enum dslogic_operation_modes {
 	DS_OP_NORMAL,
@@ -153,7 +157,7 @@ struct dev_context {
 	struct libusb_transfer **transfers;
 	struct sr_context *ctx;
 
-	uint16_t *deinterleave_buffer;
+	uint8_t *deinterleave_buffer;
 
 	uint16_t mode;
 	uint32_t trigger_pos;
@@ -169,6 +173,7 @@ struct dev_context {
 	uint64_t samples_captured;
 };
 
+SR_PRIV unsigned int dslogic_num_channels(const struct dslogic_profile *prof);
 SR_PRIV int dslogic_fpga_firmware_upload(const struct sr_dev_inst *sdi);
 SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double threshold);
 SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di);

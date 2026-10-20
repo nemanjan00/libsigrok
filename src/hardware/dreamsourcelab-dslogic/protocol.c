@@ -116,6 +116,7 @@
 #define DS_CFG_CH_EN			_DS_CFG(8, 1)
 #define DS_CFG_CH_EN_V2			_DS_CFG(10, 2)
 #define DS_CFG_TRIG			_DS_CFG(64, 160)
+#define DS_CFG_TRIG_EXT32		_DS_CFG(96, 96)
 #define DS_CFG_END			0xfa5afa5a
 
 #pragma pack(push, 1)
@@ -210,6 +211,25 @@ struct fpga_config_v2 {
 	uint16_t ch_en_header;
 	uint32_t ch_en;
 
+	uint32_t end_sync;
+};
+
+/*
+ * Trigger setup of channels 16-31, sent as a second block after the main
+ * configuration on devices with DSLOGIC_CAPS_LA_CH32.
+ */
+struct fpga_config_ext32 {
+	uint32_t sync;
+
+	uint16_t trig_header;
+	uint16_t trig_mask0[NUM_TRIGGER_STAGES];
+	uint16_t trig_mask1[NUM_TRIGGER_STAGES];
+	uint16_t trig_value0[NUM_TRIGGER_STAGES];
+	uint16_t trig_value1[NUM_TRIGGER_STAGES];
+	uint16_t trig_edge0[NUM_TRIGGER_STAGES];
+	uint16_t trig_edge1[NUM_TRIGGER_STAGES];
+
+	uint16_t align;
 	uint32_t end_sync;
 };
 
@@ -621,6 +641,8 @@ SR_PRIV int dslogic_fpga_firmware_upload(const struct sr_dev_inst *sdi)
 		name = DSCOPE_FPGA_FIRMWARE;
 	} else if (!strcmp(devc->profile->model, "DSLogic U3Pro16")) {
 		name = DSLOGIC_U3PRO16_FPGA_FIRMWARE;
+	} else if (!strcmp(devc->profile->model, "DSLogic U3Pro32")) {
+		name = DSLOGIC_U3PRO32_FPGA_FIRMWARE;
 	} else {
 		sr_err("Failed to select FPGA firmware.");
 		return SR_ERR;
@@ -700,6 +722,19 @@ SR_PRIV int dslogic_fpga_firmware_upload(const struct sr_dev_inst *sdi)
 	return result;
 }
 
+SR_PRIV unsigned int dslogic_num_channels(const struct dslogic_profile *prof)
+{
+	return (prof->dev_caps & DSLOGIC_CAPS_LA_CH32) ?
+		NUM_CHANNELS_CH32 : NUM_CHANNELS;
+}
+
+/* Bytes per sample in the logic packets sent to the session. */
+static unsigned int unitsize(const struct dev_context *devc)
+{
+	return dslogic_num_channels(devc->profile) > 16 ?
+		sizeof(uint32_t) : sizeof(uint16_t);
+}
+
 static unsigned int enabled_channel_count(const struct sr_dev_inst *sdi)
 {
 	unsigned int count = 0;
@@ -711,23 +746,25 @@ static unsigned int enabled_channel_count(const struct sr_dev_inst *sdi)
 	return count;
 }
 
-static uint16_t enabled_channel_mask(const struct sr_dev_inst *sdi)
+static uint32_t enabled_channel_mask(const struct sr_dev_inst *sdi)
 {
-	unsigned int mask = 0;
+	uint32_t mask = 0;
 	for (const GSList *l = sdi->channels; l; l = l->next) {
 		const struct sr_channel *const probe = (struct sr_channel *)l->data;
 		if (probe->enabled)
-			mask |= 1 << probe->index;
+			mask |= UINT32_C(1) << probe->index;
 	}
 	return mask;
 }
 
 /*
  * Get the session trigger and configure the FPGA structure
- * accordingly.
+ * accordingly. Triggers on channels 16-31 go into @p ext, which is
+ * only given for devices with 32 channels.
  * @return @c true if any triggers are enabled, @c false otherwise.
  */
-static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common *cfg)
+static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common *cfg,
+	struct fpga_config_ext32 *ext)
 {
 	struct sr_trigger *trigger;
 	struct sr_trigger_stage *stage;
@@ -736,6 +773,7 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 	const GSList *l, *m;
 	const unsigned int num_enabled_channels = enabled_channel_count(sdi);
 	int num_trigger_stages = 0;
+	uint16_t *mask0, *mask1, *value0, *value1, *edge0, *edge1;
 
 	int channelbit, i = 0;
 	uint64_t trigger_point;
@@ -752,6 +790,14 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 		cfg->trig_logic0[i] = 2;
 		cfg->trig_logic1[i] = 2;
 		cfg->trig_count[i] = 0;
+		if (ext) {
+			ext->trig_mask0[i] = 0xffff;
+			ext->trig_mask1[i] = 0xffff;
+			ext->trig_value0[i] = 0;
+			ext->trig_value1[i] = 0;
+			ext->trig_edge0[i] = 0;
+			ext->trig_edge1[i] = 0;
+		}
 	}
 
 	trigger_point = (devc->capture_ratio * devc->limit_samples) / 100;
@@ -779,31 +825,43 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 			if (!match->channel->enabled)
 				/* Ignore disabled channels with a trigger. */
 				continue;
-			channelbit = 1 << (match->channel->index);
+			if (match->channel->index < 16) {
+				channelbit = 1 << match->channel->index;
+				mask0 = cfg->trig_mask0; mask1 = cfg->trig_mask1;
+				value0 = cfg->trig_value0; value1 = cfg->trig_value1;
+				edge0 = cfg->trig_edge0; edge1 = cfg->trig_edge1;
+			} else if (ext) {
+				channelbit = 1 << (match->channel->index - 16);
+				mask0 = ext->trig_mask0; mask1 = ext->trig_mask1;
+				value0 = ext->trig_value0; value1 = ext->trig_value1;
+				edge0 = ext->trig_edge0; edge1 = ext->trig_edge1;
+			} else {
+				continue;
+			}
 			/* Simple trigger support (event). */
 			if (match->match == SR_TRIGGER_ONE) {
-				cfg->trig_mask0[0] &= ~channelbit;
-				cfg->trig_mask1[0] &= ~channelbit;
-				cfg->trig_value0[0] |= channelbit;
-				cfg->trig_value1[0] |= channelbit;
+				mask0[0] &= ~channelbit;
+				mask1[0] &= ~channelbit;
+				value0[0] |= channelbit;
+				value1[0] |= channelbit;
 			} else if (match->match == SR_TRIGGER_ZERO) {
-				cfg->trig_mask0[0] &= ~channelbit;
-				cfg->trig_mask1[0] &= ~channelbit;
+				mask0[0] &= ~channelbit;
+				mask1[0] &= ~channelbit;
 			} else if (match->match == SR_TRIGGER_FALLING) {
-				cfg->trig_mask0[0] &= ~channelbit;
-				cfg->trig_mask1[0] &= ~channelbit;
-				cfg->trig_edge0[0] |= channelbit;
-				cfg->trig_edge1[0] |= channelbit;
+				mask0[0] &= ~channelbit;
+				mask1[0] &= ~channelbit;
+				edge0[0] |= channelbit;
+				edge1[0] |= channelbit;
 			} else if (match->match == SR_TRIGGER_RISING) {
-				cfg->trig_mask0[0] &= ~channelbit;
-				cfg->trig_mask1[0] &= ~channelbit;
-				cfg->trig_value0[0] |= channelbit;
-				cfg->trig_value1[0] |= channelbit;
-				cfg->trig_edge0[0] |= channelbit;
-				cfg->trig_edge1[0] |= channelbit;
+				mask0[0] &= ~channelbit;
+				mask1[0] &= ~channelbit;
+				value0[0] |= channelbit;
+				value1[0] |= channelbit;
+				edge0[0] |= channelbit;
+				edge1[0] |= channelbit;
 			} else if (match->match == SR_TRIGGER_EDGE) {
-				cfg->trig_edge0[0] |= channelbit;
-				cfg->trig_edge1[0] |= channelbit;
+				edge0[0] |= channelbit;
+				edge1[0] |= channelbit;
 			}
 		}
 	}
@@ -811,7 +869,7 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 	if (devc->profile->api_version == DS_API_V1)
 		cfg->trig_glb = (num_enabled_channels << 4);
 	else
-		cfg->trig_glb = (num_enabled_channels << 8);
+		cfg->trig_glb = ((num_enabled_channels & 0x1f) << 8);
 	cfg->trig_glb |= (num_trigger_stages - 1);
 
 	return num_trigger_stages != 0;
@@ -833,6 +891,7 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 	const struct sr_usb_dev_inst *const usb = sdi->conn;
 	uint8_t c[3];
 	struct fpga_config_common *cfg;
+	struct fpga_config_ext32 *ext = NULL;
 	uint8_t *cfg_buffer;
 	uint16_t mode = 0;
 	uint32_t divider, tmp;
@@ -854,8 +913,16 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 		v2_cfg = (struct fpga_config_v2 *)cfg_buffer;
 		cfg = &v2_cfg->common;
 		WL16(&v2_cfg->ch_en_header, DS_CFG_CH_EN_V2);
-		v2_cfg->ch_en = enabled_channel_mask(sdi);
+		WL32(&v2_cfg->ch_en, enabled_channel_mask(sdi));
 		WL32(&v2_cfg->end_sync, DS_CFG_END);
+	}
+
+	if (devc->profile->dev_caps & DSLOGIC_CAPS_LA_CH32) {
+		ext = g_malloc0(sizeof(struct fpga_config_ext32));
+		WL32(&ext->sync, DS_CFG_START);
+		WL16(&ext->trig_header, DS_CFG_TRIG_EXT32);
+		WL16(&ext->align, 0xffff);
+		WL32(&ext->end_sync, DS_CFG_END);
 	}
 
 	WL32(&cfg->sync, DS_CFG_START);
@@ -880,6 +947,7 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 			sr_err("Failed to send FPGA configure command: %s.",
 				libusb_error_name(ret));
 			g_free(cfg_buffer);
+			g_free(ext);
 			return SR_ERR;
 		}
 	} else {
@@ -896,11 +964,12 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 		if (ret != SR_OK) {
 			sr_err("Failed to send FPGA configure command");
 			g_free(cfg_buffer);
+			g_free(ext);
 			return ret;
 		}
 	}
 
-	if (set_trigger(sdi, cfg))
+	if (set_trigger(sdi, cfg, ext))
 		mode |= DS_MODE_TRIG_EN;
 
 	if (devc->mode == DS_OP_INTERNAL_TEST)
@@ -947,7 +1016,21 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 	g_free(cfg_buffer);
 	if (ret < 0 || transferred != len) {
 		sr_err("Failed to send FPGA configuration: %s.", libusb_error_name(ret));
+		g_free(ext);
 		return SR_ERR;
+	}
+
+	if (ext) {
+		/* The upper trigger block follows as a separate transfer. */
+		len = sizeof(struct fpga_config_ext32);
+		ret = libusb_bulk_transfer(usb->devhdl, 2 | LIBUSB_ENDPOINT_OUT,
+				(unsigned char *)ext, len, &transferred, USB_TIMEOUT);
+		g_free(ext);
+		if (ret < 0 || transferred != len) {
+			sr_err("Failed to send FPGA ext32 configuration: %s.",
+				libusb_error_name(ret));
+			return SR_ERR;
+		}
 	}
 
 	if (devc->profile->api_version == DS_API_V2) {
@@ -978,7 +1061,9 @@ SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double 
 	int ret;
 	struct dev_context *const devc = sdi->priv;
 	const struct sr_usb_dev_inst *const usb = sdi->conn;
-	const uint8_t value = (threshold / 5.0) * 255;
+	/* The U3 series front end scales the threshold DAC differently. */
+	const uint8_t value = (devc->profile->api_version == DS_API_V2) ?
+		(threshold / 3.3) * (1.5 / 2.5) * 255 : (threshold / 5.0) * 255;
 	const uint16_t cmd = value | (DS_ADDR_VTH << 8);
 
 	/* Send the control command. */
@@ -1204,16 +1289,18 @@ static void resubmit_transfer(struct libusb_transfer *transfer)
 }
 
 static void deinterleave_buffer(const uint8_t *src, size_t length,
-	uint16_t *dst_ptr, size_t channel_count, uint16_t channel_mask)
+	uint8_t *dst_ptr, size_t channel_count, uint32_t channel_mask,
+	unsigned int num_channels, unsigned int unitsize)
 {
 	uint64_t *src_ptr = (uint64_t*)src;
-	uint64_t last_data[NUM_CHANNELS];
+	uint64_t last_data[NUM_CHANNELS_CH32];
 	bool first_loop = TRUE;
 	unsigned int idx;
+	const size_t block_bytes = DSLOGIC_ATOMIC_SAMPLES * unitsize;
 
 	/* initially memset first samples of destination buffer to avoid
 	recording uninitialized garbage for channels which are not enabled */
-	memset(dst_ptr, 0, DSLOGIC_ATOMIC_SAMPLES * sizeof(uint16_t));
+	memset(dst_ptr, 0, block_bytes);
 	/* for first iteration, force last_data to be different */
 	for (unsigned int i = 0; i < channel_count; i++)
 		last_data[i] = ~src_ptr[i];
@@ -1221,21 +1308,24 @@ static void deinterleave_buffer(const uint8_t *src, size_t length,
 	while (((uint8_t *)src_ptr) < (src + length)) {
 		if (G_LIKELY(!first_loop)) {
 			/* forward copy the previous data... */
-			memcpy(&dst_ptr[DSLOGIC_ATOMIC_SAMPLES], dst_ptr,
-				DSLOGIC_ATOMIC_SAMPLES * sizeof(uint16_t));
-			dst_ptr += DSLOGIC_ATOMIC_SAMPLES;
+			memcpy(&dst_ptr[block_bytes], dst_ptr, block_bytes);
+			dst_ptr += block_bytes;
 		} else
 			first_loop = FALSE;
 		idx = 0;
-		for (unsigned int channel = 0; channel != 16; channel++) {
+		for (unsigned int channel = 0; channel != num_channels; channel++) {
 			/* ...and now selectively search for changes per channel */
-			if (channel_mask & (1 << channel)) {
+			if (channel_mask & (UINT32_C(1) << channel)) {
 				if (last_data[idx] != src_ptr[idx]) {
+					/* Samples are little endian: channel n is
+					 * bit (n % 8) of byte (n / 8). */
+					uint8_t *dst = dst_ptr + channel / 8;
+					const uint8_t chbit = 1 << (channel % 8);
 					for (unsigned int bit = 0; bit != DSLOGIC_ATOMIC_SAMPLES; bit++) {
 						if (src_ptr[idx] & (UINT64_C(1) << bit))
-							dst_ptr[bit] |= (1 << channel);
+							dst[bit * unitsize] |= chbit;
 						else
-							dst_ptr[bit] &= ~(uint16_t)(1 << channel);
+							dst[bit * unitsize] &= ~chbit;
 					}
 				}
 				idx++;
@@ -1248,12 +1338,13 @@ static void deinterleave_buffer(const uint8_t *src, size_t length,
 }
 
 static void send_data(struct sr_dev_inst *sdi,
-	uint16_t *data, size_t sample_count)
+	const uint8_t *data, size_t sample_count)
 {
+	const struct dev_context *const devc = sdi->priv;
 	const struct sr_datafeed_logic logic = {
-		.length = sample_count * sizeof(uint16_t),
-		.unitsize = sizeof(uint16_t),
-		.data = data
+		.length = sample_count * unitsize(devc),
+		.unitsize = unitsize(devc),
+		.data = (void *)data
 	};
 
 	const struct sr_datafeed_packet packet = {
@@ -1268,7 +1359,8 @@ static void * session_worker_thread(void *data) {
 	struct sr_dev_inst *const sdi = data;
 	struct dev_context *devc = sdi->priv;
 	const size_t channel_count = enabled_channel_count(sdi);
-	const uint16_t channel_mask = enabled_channel_mask(sdi);
+	const uint32_t channel_mask = enabled_channel_mask(sdi);
+	const unsigned int usize = unitsize(devc);
 	uint64_t num_samples;
 	uint64_t limit_samples;
 	gboolean abort = FALSE;
@@ -1329,7 +1421,8 @@ static void * session_worker_thread(void *data) {
 			} else {
 				deinterleave_buffer(finished_transfer->buffer,
 					finished_transfer->length,
-					devc->deinterleave_buffer, channel_count, channel_mask);
+					devc->deinterleave_buffer, channel_count, channel_mask,
+					dslogic_num_channels(devc->profile), usize);
 
 				/* Send the incoming transfer to the session bus. */
 				if (devc->trigger_pos > devc->sent_samples
@@ -1345,7 +1438,7 @@ static void * session_worker_thread(void *data) {
 					/* Post trigger samples. */
 					num_samples -= trigger_offset;
 					send_data(sdi, devc->deinterleave_buffer
-						+ trigger_offset, num_samples);
+						+ trigger_offset * usize, num_samples);
 					devc->sent_samples += num_samples;
 				} else {
 					send_data(sdi, devc->deinterleave_buffer, num_samples);
@@ -1549,7 +1642,7 @@ static int start_transfers(const struct sr_dev_inst *sdi)
 	}
 
 	devc->deinterleave_buffer = g_try_malloc(DSLOGIC_ATOMIC_SAMPLES *
-		(size / (channel_count * DSLOGIC_ATOMIC_BYTES)) * sizeof(uint16_t));
+		(size / (channel_count * DSLOGIC_ATOMIC_BYTES)) * unitsize(devc));
 	if (!devc->deinterleave_buffer) {
 		sr_err("Deinterleave buffer malloc failed.");
 		g_free(devc->deinterleave_buffer);
@@ -1621,6 +1714,63 @@ static void LIBUSB_CALL trigger_receive(struct libusb_transfer *transfer)
 	libusb_free_transfer(transfer);
 }
 
+struct rate_limit {
+	unsigned int max_channels;
+	uint64_t max_samplerate;
+};
+
+/* Channel count vs. samplerate limits of the U3 series (from DSView). */
+static const struct rate_limit u3_buffer_limits[] = {
+	{ 8, SR_GHZ(1) }, { 16, SR_MHZ(500) }, { 32, SR_MHZ(250) }, { 0, 0 },
+};
+static const struct rate_limit u3pro16_stream_ss_limits[] = {
+	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
+	{ 16, SR_MHZ(125) }, { 0, 0 },
+};
+static const struct rate_limit u3pro32_stream_ss_limits[] = {
+	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
+	{ 30, SR_MHZ(100) }, { 32, SR_MHZ(50) }, { 0, 0 },
+};
+static const struct rate_limit u3_stream_hs_limits[] = {
+	{ 3, SR_MHZ(100) }, { 6, SR_MHZ(50) }, { 12, SR_MHZ(25) },
+	{ 16, SR_MHZ(20) }, { 32, SR_MHZ(10) }, { 0, 0 },
+};
+
+/* Check the samplerate against what the enabled channels allow. */
+static int check_samplerate(const struct sr_dev_inst *sdi)
+{
+	const struct dev_context *const devc = sdi->priv;
+	const struct sr_usb_dev_inst *const usb = sdi->conn;
+	const unsigned int channels = enabled_channel_count(sdi);
+	const struct rate_limit *limits;
+
+	if (devc->profile->api_version != DS_API_V2 || devc->external_clock)
+		return SR_OK;
+
+	if (!devc->continuous_mode)
+		limits = u3_buffer_limits;
+	else if (libusb_get_device_speed(libusb_get_device(usb->devhdl)) <
+			LIBUSB_SPEED_SUPER)
+		limits = u3_stream_hs_limits;
+	else if (devc->profile->dev_caps & DSLOGIC_CAPS_LA_CH32)
+		limits = u3pro32_stream_ss_limits;
+	else
+		limits = u3pro16_stream_ss_limits;
+
+	for (; limits->max_channels; limits++) {
+		if (channels > limits->max_channels)
+			continue;
+		if (devc->cur_samplerate <= limits->max_samplerate)
+			return SR_OK;
+		sr_err("%u channels allow at most %" PRIu64 " MHz in %s mode.",
+			channels, limits->max_samplerate / SR_MHZ(1),
+			devc->continuous_mode ? "continuous" : "buffered");
+		return SR_ERR_SAMPLERATE;
+	}
+	sr_err("Too many channels enabled (%u).", channels);
+	return SR_ERR_ARG;
+}
+
 SR_PRIV int dslogic_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	const unsigned int timeout = get_timeout(sdi);
@@ -1637,6 +1787,9 @@ SR_PRIV int dslogic_acquisition_start(const struct sr_dev_inst *sdi)
 	drvc = di->context;
 	devc = sdi->priv;
 	usb = sdi->conn;
+
+	if ((ret = check_samplerate(sdi)) != SR_OK)
+		return ret;
 
 	devc->ctx = drvc->sr_ctx;
 	devc->sent_samples = 0;
