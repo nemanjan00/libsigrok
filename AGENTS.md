@@ -12,7 +12,7 @@ comes in as a merge, so each source can be followed in `git log --graph`.
 |---|---|---|
 | [sigrokproject/libsigrok](https://github.com/sigrokproject/libsigrok) `master` | upstream | merged |
 | [christianeisendle/libsigrok](https://github.com/christianeisendle/libsigrok) `master` | DreamSourceLab DSLogic: U3Pro16 support, worker thread for sample processing, optimized/fixed deinterleaving, USB error handling, buffered mode kept, continuous mode by default (16 commits) | merged |
-| nemanjan00 (`0fab8d6e`) | DSLogic U3Pro32 profile (`2a0e:002c`) | own commit |
+| branch `dslogic-u3pro32` | DSLogic U3Pro32 support (32 channels, `2a0e:002c`), U3 threshold fix, samplerate/channel check, U3 udev rules | merged |
 | [sipeed/libsigrok](https://github.com/sipeed/libsigrok/tree/slogic-dev) `slogic-dev` | Sipeed SLogic analyzers (16U3, 32U3, Combo 8) on the shared `libslogic` core, udev rules, `std_i32_idx()` | merged |
 | branch `saleae-logic-pro8` (`614918c6`) | Saleae Logic Pro 8 support with the current (Logic 2) protocol, firmware and bitstream | merged |
 
@@ -79,9 +79,13 @@ can be sent upstream as is. `master` is only where the branches are combined.
   changes.
 - To refresh a topic branch for upstreaming, rebase it on the latest
   `origin/master` (topic branches may be force-pushed; `master` never).
-- Current topic branches: `saleae-logic-pro8` (Saleae Logic Pro 8). The
-  DSLogic and SLogic work is maintained upstream-style in their own repos
-  (`christian/*`, `sipeed/slogic-dev`) and is merged from there.
+- Current topic branches: `saleae-logic-pro8` (Saleae Logic Pro 8) and
+  `dslogic-u3pro32` (DSLogic U3Pro32). The SLogic work and the rest of the
+  DSLogic work are maintained upstream-style in their own repos
+  (`christian/*`, `sipeed/slogic-dev`) and are merged from there.
+- Exception: `dslogic-u3pro32` is based on `christian/master`, not
+  `origin/master`, because the U3 (DS_API_V2) code it extends only exists
+  there. Upstream it together with or after that work.
 
 ## Saleae Logic Pro 8 (`saleae-logic-pro`)
 
@@ -147,6 +151,44 @@ all 8 analog at 6.25 MS/s, a UART decoded byte-exact from both digital and
 analog channels, voltages matching Logic 2 within 10 mV, triggers, and
 recovery after a killed session.
 The Logic Pro 16 path (legacy firmware) is untested.
+
+## DSLogic U3Pro32 (`dreamsourcelab-dslogic`)
+
+Hardware: `2a0e:002c`, FX3 (firmware in flash, no upload) + FPGA, USB 3.
+Built from DSView's `libsigrok4DSL/hardware/DSL/` (`dsl.h`, `dsl.c`).
+
+- **FPGA bitstream:** DSView's `DSLogicU3Pro32.bin`
+  (`/usr/share/DSView/res/`), installed as
+  `dreamsourcelab-dslogic-u3pro32-fpga.fw` in a firmware dir. It differs
+  from the U3Pro16 one.
+- **32 channels** come from `DSLOGIC_CAPS_LA_CH32` (same bit as DSView's
+  `CAPS_FEATURE_LA_CH32`). `ch_en` is 32 bits; logic packets use
+  unitsize 4 (16-channel devices keep 2).
+- **Second config block:** after the main FPGA config, the 32-channel
+  FPGA wants a separate bulk transfer with the trigger masks of channels
+  16-31 (`sync`, header `_DS_CFG(96, 96)` = `0x6060`, six 16-stage
+  arrays, `0xffff` padding, end sync). `DSL_CTL_BULK_WR` still announces
+  only the main block's length, like DSView.
+- **Rate limits** (DSView channel modes, checked at acquisition start):
+  buffered 8 ch 1 GHz / 16 ch 500 MHz / 32 ch 250 MHz; continuous on USB 3
+  3 ch 1 GHz / 6 ch 500 MHz / 12 ch 250 MHz / 30 ch 100 MHz /
+  32 ch 50 MHz; continuous on USB 2 is 10-100 MHz.
+- **Threshold:** the U3 series scales the DAC as `vth / 3.3 * 1.5 / 2.5`,
+  not `vth / 5` (DSView).
+- **Pre-trigger:** if the trigger condition is already true when the
+  capture is armed (e.g. a free-running clock), the FPGA fires at once and
+  there is almost no pre-trigger data. That's the hardware, not a bug.
+- External trigger in/out (the `I`/`O` pins) isn't exposed by this driver.
+
+Verified on hardware (2026-10-20) with a Glasgow revC3 as the signal
+source: channel mapping on 0-8 and 28-31, a 6 MHz clock measured in every
+mode above, triggers on low and high channels (incl. pre-trigger at
+10/50/90 %), external clock on the `C` pin, 30 ch @ 100 MHz streamed for
+2 s without loss, and the threshold at 1.8 V. The U3Pro16 path was not
+re-tested (no hardware).
+
+Bench wiring: Glasgow A0-A2 -> ch 0-2, A3-A7 -> ch 4-8, B4/B5/B6/B7 ->
+ch 29/28/30/31, B0/B1/B2 -> DSLogic `O`/`I`/`C`.
 
 ## Testing gotchas (lab PC)
 
