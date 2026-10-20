@@ -183,7 +183,15 @@ Built from DSView's `libsigrok4DSL/hardware/DSL/` (`dsl.h`, `dsl.c`).
 - **Pre-trigger:** if the trigger condition is already true when the
   capture is armed (e.g. a free-running clock), the FPGA fires at once and
   there is almost no pre-trigger data. That's the hardware, not a bug.
-- External trigger in/out (the `I`/`O` pins) isn't exposed by this driver.
+- **Extra pins** (datasheet `DSLogic_U3Pro32_Datasheet.pdf`): `CK` is the
+  external clock (state mode, max 50 MHz), `TI` is "reserved" (no function,
+  DSView doesn't use it either), `TO` pulses once per capture, at the trigger
+  or at the start when there's none, with no configuration. Nothing to
+  implement for `TI`/`TO`.
+- **Transfers can end mid-block** (a 64-sample block is 8 bytes x enabled
+  channels): e.g. with an external clock slower than the samplerate,
+  transfers time out part-filled. The worker carries the cut-off bytes over
+  to the next transfer; it used to abort with "Invalid transfer length!".
 
 Verified on hardware (2026-10-20) with a Glasgow revC3 as the signal
 source: channel mapping on 0-2, 4-8 and 28-31, a 6 MHz clock measured in every
@@ -191,6 +199,12 @@ mode above, triggers on low and high channels (incl. pre-trigger at
 10/50/90 %), external clock on the `C` pin, 30 ch @ 100 MHz streamed for
 2 s without loss, and the threshold at 1.8 V. The U3Pro16 path was not
 re-tested (no hardware).
+
+Later the same day, with `~/sigrok/la-bench` (Glasgow pattern applet +
+`la_check.py`): count/gray/prbs/walk patterns at up to 24 MHz step rate
+checked sample by sample (0 errors, buffered and continuous, 12 and 32
+channels), external clock at 1/12/24 MHz in both modes, and `TO` edges
+counted on the Glasgow.
 
 Bench wiring: Glasgow A0-A2 -> ch 0-2, A3-A7 -> ch 4-8, B4/B5/B6/B7 ->
 ch 29/28/30/31, B0/B1/B2 -> DSLogic `O`/`I`/`C`.
