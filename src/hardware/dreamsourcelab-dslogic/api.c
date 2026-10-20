@@ -54,6 +54,12 @@ static const struct dslogic_profile supported_device[] = {
 		DSLOGIC_CAPS_ADF4360, "DreamSourceLab", "DSLogic", 
 		2ULL * 1024ULL * 1024ULL * 1024ULL, 40,
 		1024, DS_API_V2, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5},
+	/* DreamSourceLab DSLogic U3Pro32 */
+	{ 0x2a0e, 0x002c, "DreamSourceLab", "DSLogic U3Pro32", NULL,
+		"dreamsourcelab-dslogic-basic-fx2.fw",
+		DSLOGIC_CAPS_ADF4360 | DSLOGIC_CAPS_LA_CH32, "DreamSourceLab", "DSLogic",
+		2ULL * 1024ULL * 1024ULL * 1024ULL, 40,
+		1024, DS_API_V2, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5},
 
 	ALL_ZERO
 };
@@ -273,7 +279,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 		/* Logic channels, all in one channel group. */
 		cg = sr_channel_group_new(sdi, "Logic", NULL);
-		for (j = 0; j < NUM_CHANNELS; j++) {
+		for (j = 0; j < (int)dslogic_num_channels(prof); j++) {
 			sprintf(channel_name, "%d", j);
 			ch = sr_channel_new(sdi, j, SR_CHANNEL_LOGIC,
 						TRUE, channel_name);
@@ -285,7 +291,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->priv = devc;
 		devices = g_slist_append(devices, sdi);
 
-		if (strcmp("DSLogic U3Pro16", devc->profile->model) == 0) {
+		if (devc->profile->api_version == DS_API_V2) {
 			devc->samplerates = samplerates_U3Pro16;
 			devc->num_samplerates = ARRAY_SIZE(samplerates_U3Pro16);
 		} else {
