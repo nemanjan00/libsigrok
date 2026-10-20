@@ -108,6 +108,32 @@ struct dslogic_trigger_pos {
 	uint32_t status;
 };
 
+/* Fastest samplerate for up to max_channels enabled channels. */
+struct dslogic_rate_limit {
+	unsigned int max_channels;
+	uint64_t max_samplerate;
+};
+
+/* How a threshold voltage maps to the threshold DAC value. */
+enum dslogic_vth_scale {
+	DS_VTH_SCALE_5V, /* value = vth / 5.0 * 255 */
+	DS_VTH_SCALE_U3, /* value = vth / 3.3 * 1.5 / 2.5 * 255 (U3 series, DSView) */
+};
+
+/*
+ * Properties of a hardware family. Without one, a device gets the generic
+ * samplerate list, 5 V threshold scaling and no samplerate check.
+ */
+struct dslogic_hw {
+	const uint64_t *samplerates;
+	int num_samplerates;
+	enum dslogic_vth_scale vth_scale;
+	/* Limit tables end with a { 0, 0 } entry; NULL means no check. */
+	const struct dslogic_rate_limit *buffer_limits;
+	const struct dslogic_rate_limit *stream_limits_usb3;
+	const struct dslogic_rate_limit *stream_limits_usb2;
+};
+
 struct dslogic_profile {
 	uint16_t vid;
 	uint16_t pid;
@@ -131,6 +157,9 @@ struct dslogic_profile {
 	uint64_t half_samplerate;
     uint64_t quarter_samplerate;
 	uint8_t max_predivider;
+
+	/* Hardware properties, or NULL for the defaults (see dslogic_hw). */
+	const struct dslogic_hw *hw;
 };
 
 struct dev_context {

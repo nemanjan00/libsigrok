@@ -1072,8 +1072,8 @@ SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double 
 	int ret;
 	struct dev_context *const devc = sdi->priv;
 	const struct sr_usb_dev_inst *const usb = sdi->conn;
-	/* The U3 series front end scales the threshold DAC differently. */
-	const uint8_t value = (devc->profile->dev_caps & DSLOGIC_CAPS_USB30) ?
+	const struct dslogic_hw *hw = devc->profile->hw;
+	const uint8_t value = (hw && hw->vth_scale == DS_VTH_SCALE_U3) ?
 		(threshold / 3.3) * (1.5 / 2.5) * 255 : (threshold / 5.0) * 255;
 	const uint16_t cmd = value | (DS_ADDR_VTH << 8);
 
@@ -1753,48 +1753,27 @@ static void LIBUSB_CALL trigger_receive(struct libusb_transfer *transfer)
 	libusb_free_transfer(transfer);
 }
 
-struct rate_limit {
-	unsigned int max_channels;
-	uint64_t max_samplerate;
-};
-
-/* Channel count vs. samplerate limits of the U3 series (from DSView). */
-static const struct rate_limit u3_buffer_limits[] = {
-	{ 8, SR_GHZ(1) }, { 16, SR_MHZ(500) }, { 32, SR_MHZ(250) }, { 0, 0 },
-};
-static const struct rate_limit u3pro16_stream_ss_limits[] = {
-	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
-	{ 16, SR_MHZ(125) }, { 0, 0 },
-};
-static const struct rate_limit u3pro32_stream_ss_limits[] = {
-	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
-	{ 30, SR_MHZ(100) }, { 32, SR_MHZ(50) }, { 0, 0 },
-};
-static const struct rate_limit u3_stream_hs_limits[] = {
-	{ 3, SR_MHZ(100) }, { 6, SR_MHZ(50) }, { 12, SR_MHZ(25) },
-	{ 16, SR_MHZ(20) }, { 32, SR_MHZ(10) }, { 0, 0 },
-};
-
 /* Check the samplerate against what the enabled channels allow. */
 static int check_samplerate(const struct sr_dev_inst *sdi)
 {
 	const struct dev_context *const devc = sdi->priv;
 	const struct sr_usb_dev_inst *const usb = sdi->conn;
 	const unsigned int channels = enabled_channel_count(sdi);
-	const struct rate_limit *limits;
+	const struct dslogic_hw *hw = devc->profile->hw;
+	const struct dslogic_rate_limit *limits;
 
-	if (!(devc->profile->dev_caps & DSLOGIC_CAPS_USB30) || devc->external_clock)
+	if (!hw || devc->external_clock)
 		return SR_OK;
 
 	if (!devc->continuous_mode)
-		limits = u3_buffer_limits;
+		limits = hw->buffer_limits;
 	else if (libusb_get_device_speed(libusb_get_device(usb->devhdl)) <
 			LIBUSB_SPEED_SUPER)
-		limits = u3_stream_hs_limits;
-	else if (devc->profile->dev_caps & DSLOGIC_CAPS_LA_CH32)
-		limits = u3pro32_stream_ss_limits;
+		limits = hw->stream_limits_usb2;
 	else
-		limits = u3pro16_stream_ss_limits;
+		limits = hw->stream_limits_usb3;
+	if (!limits)
+		return SR_OK;
 
 	for (; limits->max_channels; limits++) {
 		if (channels > limits->max_channels)
