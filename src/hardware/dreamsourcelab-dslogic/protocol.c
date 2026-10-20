@@ -1714,6 +1714,63 @@ static void LIBUSB_CALL trigger_receive(struct libusb_transfer *transfer)
 	libusb_free_transfer(transfer);
 }
 
+struct rate_limit {
+	unsigned int max_channels;
+	uint64_t max_samplerate;
+};
+
+/* Channel count vs. samplerate limits of the U3 series (from DSView). */
+static const struct rate_limit u3_buffer_limits[] = {
+	{ 8, SR_GHZ(1) }, { 16, SR_MHZ(500) }, { 32, SR_MHZ(250) }, { 0, 0 },
+};
+static const struct rate_limit u3pro16_stream_ss_limits[] = {
+	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
+	{ 16, SR_MHZ(125) }, { 0, 0 },
+};
+static const struct rate_limit u3pro32_stream_ss_limits[] = {
+	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
+	{ 30, SR_MHZ(100) }, { 32, SR_MHZ(50) }, { 0, 0 },
+};
+static const struct rate_limit u3_stream_hs_limits[] = {
+	{ 3, SR_MHZ(100) }, { 6, SR_MHZ(50) }, { 12, SR_MHZ(25) },
+	{ 16, SR_MHZ(20) }, { 32, SR_MHZ(10) }, { 0, 0 },
+};
+
+/* Check the samplerate against what the enabled channels allow. */
+static int check_samplerate(const struct sr_dev_inst *sdi)
+{
+	const struct dev_context *const devc = sdi->priv;
+	const struct sr_usb_dev_inst *const usb = sdi->conn;
+	const unsigned int channels = enabled_channel_count(sdi);
+	const struct rate_limit *limits;
+
+	if (devc->profile->api_version != DS_API_V2 || devc->external_clock)
+		return SR_OK;
+
+	if (!devc->continuous_mode)
+		limits = u3_buffer_limits;
+	else if (libusb_get_device_speed(libusb_get_device(usb->devhdl)) <
+			LIBUSB_SPEED_SUPER)
+		limits = u3_stream_hs_limits;
+	else if (devc->profile->dev_caps & DSLOGIC_CAPS_LA_CH32)
+		limits = u3pro32_stream_ss_limits;
+	else
+		limits = u3pro16_stream_ss_limits;
+
+	for (; limits->max_channels; limits++) {
+		if (channels > limits->max_channels)
+			continue;
+		if (devc->cur_samplerate <= limits->max_samplerate)
+			return SR_OK;
+		sr_err("%u channels allow at most %" PRIu64 " MHz in %s mode.",
+			channels, limits->max_samplerate / SR_MHZ(1),
+			devc->continuous_mode ? "continuous" : "buffered");
+		return SR_ERR_SAMPLERATE;
+	}
+	sr_err("Too many channels enabled (%u).", channels);
+	return SR_ERR_ARG;
+}
+
 SR_PRIV int dslogic_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	const unsigned int timeout = get_timeout(sdi);
@@ -1730,6 +1787,9 @@ SR_PRIV int dslogic_acquisition_start(const struct sr_dev_inst *sdi)
 	drvc = di->context;
 	devc = sdi->priv;
 	usb = sdi->conn;
+
+	if ((ret = check_samplerate(sdi)) != SR_OK)
+		return ret;
 
 	devc->ctx = drvc->sr_ctx;
 	devc->sent_samples = 0;
