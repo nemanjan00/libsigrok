@@ -1061,7 +1061,9 @@ SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double 
 	int ret;
 	struct dev_context *const devc = sdi->priv;
 	const struct sr_usb_dev_inst *const usb = sdi->conn;
-	const uint8_t value = (threshold / 5.0) * 255;
+	/* The U3 series front end scales the threshold DAC differently. */
+	const uint8_t value = (devc->profile->api_version == DS_API_V2) ?
+		(threshold / 3.3) * (1.5 / 2.5) * 255 : (threshold / 5.0) * 255;
 	const uint16_t cmd = value | (DS_ADDR_VTH << 8);
 
 	/* Send the control command. */
