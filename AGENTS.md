@@ -44,6 +44,10 @@ git merge sipeed/slogic-dev
 git push fork master
 ```
 
+`master` replaces upstream's plain-text `README` with `README.md`. If an
+upstream merge conflicts on `README` (modify/delete), keep it deleted and
+carry anything worth having into `README.md`.
+
 After a sync, run a full build with every driver (see below). The sources
 touch shared files (`configure.ac`, `src/std.c`, `src/libsigrok-internal.h`,
 `contrib/60-libsigrok.rules`), so check that region of a merge carefully.
@@ -83,7 +87,7 @@ can be sent upstream as is. `master` is only where the branches are combined.
   `git checkout -b <topic> origin/master`.
 - Only upstreamable changes go on a topic branch: driver code and its docs
   (e.g. `src/hardware/<driver>/PROTOCOL.md`). Fork-only files such as this
-  `AGENTS.md` and `la-bench/` stay on `master`.
+  `AGENTS.md`, `README.md` and `la-bench/` stay on `master`.
 - Commit to the topic branch first, push it, then merge it into `master` with
   `--no-ff` and push `master`. Both must always carry the same driver
   changes.
