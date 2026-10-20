@@ -83,7 +83,7 @@ can be sent upstream as is. `master` is only where the branches are combined.
   `git checkout -b <topic> origin/master`.
 - Only upstreamable changes go on a topic branch: driver code and its docs
   (e.g. `src/hardware/<driver>/PROTOCOL.md`). Fork-only files such as this
-  `AGENTS.md` stay on `master`.
+  `AGENTS.md` and `la-bench/` stay on `master`.
 - Commit to the topic branch first, push it, then merge it into `master` with
   `--no-ff` and push `master`. Both must always carry the same driver
   changes.
