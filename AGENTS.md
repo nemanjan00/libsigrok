@@ -12,6 +12,9 @@ comes in as a merge, so each source can be followed in `git log --graph`.
 |---|---|---|
 | [sigrokproject/libsigrok](https://github.com/sigrokproject/libsigrok) `master` | upstream | merged |
 | [christianeisendle/libsigrok](https://github.com/christianeisendle/libsigrok) `master` | DreamSourceLab DSLogic: U3Pro16 support, worker thread for sample processing, optimized/fixed deinterleaving, USB error handling, buffered mode kept, continuous mode by default (16 commits) | merged |
+| [fredzo/libsigrok](https://github.com/fredzo/libsigrok/tree/rigol-dho-support) `rigol-dho-support` ([PR #246](https://github.com/sigrokproject/libsigrok/pull/246)) | Rigol DHO800/900/1000/4000 in `rigol-ds` (`PROTOCOL_V6`) | via `rigol-mho900` |
+| branch `rigol-mho900` | Rigol MHO98 on top of PR #246, DHO/MHO memory samplerate fix, waveform-source check | merged |
+| nemanjan00 (`0e6ef292`) | fork only: `NK Technologies` IDN accepted as Rigol (the lab's MHO98) | own commit |
 | branch `dslogic-u3pro32` | DSLogic U3Pro32 support (32 channels, `2a0e:002c`), U3 threshold fix, samplerate/channel check, U3 udev rules | merged |
 | [sipeed/libsigrok](https://github.com/sipeed/libsigrok/tree/slogic-dev) `slogic-dev` | Sipeed SLogic analyzers (16U3, 32U3, Combo 8) on the shared `libslogic` core, udev rules, `std_i32_idx()` | merged |
 | branch `saleae-logic-pro8` (`614918c6`) | Saleae Logic Pro 8 support with the current (Logic 2) protocol, firmware and bitstream | merged |
@@ -80,12 +83,14 @@ can be sent upstream as is. `master` is only where the branches are combined.
 - To refresh a topic branch for upstreaming, rebase it on the latest
   `origin/master` (topic branches may be force-pushed; `master` never).
 - Current topic branches: `saleae-logic-pro8` (Saleae Logic Pro 8) and
-  `dslogic-u3pro32` (DSLogic U3Pro32). The SLogic work and the rest of the
+  `dslogic-u3pro32` (DSLogic U3Pro32) and `rigol-mho900` (Rigol MHO98).
+  The SLogic work and the rest of the
   DSLogic work are maintained upstream-style in their own repos
   (`christian/*`, `sipeed/slogic-dev`) and are merged from there.
 - Exception: `dslogic-u3pro32` is based on `christian/master`, not
   `origin/master`, because the U3 (DS_API_V2) code it extends only exists
-  there. Upstream it together with or after that work.
+  there. Upstream it together with or after that work. Likewise
+  `rigol-mho900` is based on `fredzo/rigol-dho-support` (PR #246).
 
 ## Saleae Logic Pro 8 (`saleae-logic-pro`)
 
@@ -189,6 +194,37 @@ re-tested (no hardware).
 
 Bench wiring: Glasgow A0-A2 -> ch 0-2, A3-A7 -> ch 4-8, B4/B5/B6/B7 ->
 ch 29/28/30/31, B0/B1/B2 -> DSLogic `O`/`I`/`C`.
+
+## Rigol MHO98 (`rigol-ds`)
+
+LAN only so far: `rigol-ds:conn=tcp-raw/<ip>/5555`. The MHO900 series
+uses the DHO dialect (`PROTOCOL_V6`, PR #246). MHO98: 4 analog channels,
+16 digital with the logic probe, 1 mV/div minimum, 200 ps/div to
+500 s/div.
+
+- **Memory/segmented samplerate** comes from `:ACQ:SRAT?`. `WAV:XINC?`
+  follows `WAV:MODE`, which is still `NORM` when the rate is read, and
+  gives the screen point spacing (1000x off at 1 Mpts).
+- **`WAV:SOUR` is read back** on V6: config writes skip `*OPC?`, so a
+  refused source (a channel that's switched off, or D0-D15 without the
+  logic probe) used to be read as the previous source, e.g. CH1's samples
+  delivered as D0.
+- **Memory mode sends `:STOP`** (PR #246), so the scope stays stopped
+  afterwards; press Run or send `:RUN`.
+- The driver turns off analog channels that aren't selected, on the scope
+  too (e.g. `-C CH1` hides CH2).
+- "Read should have been completed" is logged after every block on
+  `tcp-raw`: that transport treats a full 1-byte read (the trailing
+  newline) as "more may follow". Harmless, all `rigol-ds` models.
+- Use `-o file.sr` rather than `-O csv`: the csv output module overflows
+  on the variable block sizes (see the Logic Pro 8 notes).
+
+Verified (2026-10-20, firmware 00.01.03, CH1 on the probe-comp output,
+CH2 on the built-in generator G1, 1 kHz): live (1000 pts/frame,
+multi-frame) and memory captures of 10 kpts and 1 Mpts with the right
+amplitude, frequency and samplerate; timebase, vdiv, coupling, probe
+factor and trigger get/set. Digital channels are untested (no logic
+probe); segmented mode is untested.
 
 ## Testing gotchas (lab PC)
 
