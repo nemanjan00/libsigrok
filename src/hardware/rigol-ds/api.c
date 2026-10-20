@@ -61,6 +61,9 @@ static const uint32_t devopts_cg_analog[] = {
 };
 
 static const uint64_t timebases[][2] = {
+	/* picoseconds */
+	{ 200, 1000000000000 },
+	{ 500, 1000000000000 },
 	/* nanoseconds */
 	{ 1, 1000000000 },
 	{ 2, 1000000000 },
@@ -190,6 +193,7 @@ enum series {
 	DHO900,
 	DHO1000,
 	DHO4000,
+	MHO900,
 };
 
 /* short name, full name */
@@ -230,6 +234,8 @@ static const struct rigol_ds_series supported_series[] = {
 		{500, 1}, {500, 1000000}, 10, 1000, 0},
 	[DHO4000] = {VENDOR(RIGOL), "DHO4000", PROTOCOL_V6, FORMAT_IEEE488_2,
 		{500, 1}, {100, 1000000}, 10, 1000, 0},
+	[MHO900] = {VENDOR(RIGOL), "MHO900", PROTOCOL_V6, FORMAT_IEEE488_2,
+		{500, 1}, {1, 1000}, 10, 1000, 0},
 };
 
 #define SERIES(x) &supported_series[x]
@@ -322,6 +328,7 @@ static const struct rigol_ds_model supported_models[] = {
 	{SERIES(DHO4000), "DHO4204", {2, 1000000000}, CH_INFO(4, false), std_cmd},
 	{SERIES(DHO4000), "DHO4404", {2, 1000000000}, CH_INFO(4, false), std_cmd},
 	{SERIES(DHO4000), "DHO4804", {2, 1000000000}, CH_INFO(4, false), std_cmd},
+	{SERIES(MHO900), "MHO98", {200, 1000000000000}, CH_INFO(4, true), std_cmd},
 };
 
 static struct sr_dev_driver rigol_ds_driver_info;
