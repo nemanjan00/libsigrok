@@ -203,9 +203,15 @@ Built from DSView's `libsigrok4DSL/hardware/DSL/` (`dsl.h`, `dsl.c`).
   implement for `TI`/`TO`.
 - **API version vs. hardware:** since PR #170 the protocol version
   (`devc->api_version`) is detected from the USB product string, so USB 2
-  DSLogics can speak V2 too. Anything that describes the U3 hardware rather
-  than the protocol (rate table, threshold scaling, samplerate limits) tests
-  `DSLOGIC_CAPS_USB30` instead.
+  DSLogics can speak V2 too. What describes the hardware rather than the
+  protocol (samplerate list, threshold DAC scaling, samplerate limits) is
+  in a per-family `struct dslogic_hw` that the profile points to
+  (`u3pro16_hw`, `u3pro32_hw` in `api.c`); a profile with `NULL` gets the
+  defaults. Add a model by filling in its profile and, if needed, its
+  `dslogic_hw`, not by testing capability flags.
+- **Not to be confused with the DSLogic Plus "Pango"** (`2a0e:0034`, PR
+  #291-#294): a DSLogic Plus revision with a Pango FPGA. It uses the same V2
+  command transport as the U3 series, plus a security challenge.
 - **Transfers can end mid-block** (a 64-sample block is 8 bytes x enabled
   channels): e.g. with an external clock slower than the samplerate,
   transfers time out part-filled. The worker carries the cut-off bytes over
