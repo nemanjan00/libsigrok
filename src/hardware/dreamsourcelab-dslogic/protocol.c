@@ -354,7 +354,7 @@ static int command_get_fw_version(struct sr_dev_inst *sdi,
 	libusb_device_handle *devhdl = usb->devhdl;
 	int ret;
 
-	if (devc->profile->api_version == DS_API_V2)
+	if (devc->api_version == DS_API_V2)
 		return command_read(devhdl,	DSL_CTL_FW_VERSION,
 				sizeof(struct version_info), (uint8_t *)vi);
 
@@ -377,7 +377,7 @@ static int command_get_revid_version(struct sr_dev_inst *sdi, uint8_t *revid)
 	struct dev_context *devc = sdi->priv;
 	libusb_device_handle *devhdl = usb->devhdl;
 
-	if (devc->profile->api_version == DS_API_V2)
+	if (devc->api_version == DS_API_V2)
 		return command_read(devhdl,	DSL_CTL_REVID_VERSION,
 				sizeof(uint8_t), revid);
 	int ret;
@@ -432,7 +432,7 @@ static int command_start_acquisition(const struct sr_dev_inst *sdi)
 	devc = sdi->priv;
 	usb = sdi->conn;
 
-	if (devc->profile->api_version == DS_API_V1) {
+	if (devc->api_version == DS_API_V1) {
 		mode.flags = DS_START_FLAGS_MODE_LA | DS_START_FLAGS_SAMPLE_WIDE;
 		mode.sample_delay_h = mode.sample_delay_l = 0;
 
@@ -465,7 +465,7 @@ static int command_stop_acquisition(const struct sr_dev_inst *sdi)
 	mode.sample_delay_h = mode.sample_delay_l = 0;
 
 	usb = sdi->conn;
-	if (devc->profile->api_version == DS_API_V1) {
+	if (devc->api_version == DS_API_V1) {
 		ret = libusb_control_transfer(usb->devhdl, LIBUSB_REQUEST_TYPE_VENDOR |
 				LIBUSB_ENDPOINT_OUT, DS_CMD_START, 0x0000, 0x0000,
 				(unsigned char *)&mode, sizeof(struct dslogic_mode), USB_TIMEOUT);
@@ -655,7 +655,7 @@ SR_PRIV int dslogic_fpga_firmware_upload(const struct sr_dev_inst *sdi)
 	if (result != SR_OK)
 		return result;
 
-	if (devc->profile->api_version == DS_API_V2) {
+	if (devc->api_version == DS_API_V2) {
 		result = fpga_firmware_upload_v2(usb->devhdl, drvc->sr_ctx,
 									&bitstream);
 		if (result != SR_OK) {
@@ -866,7 +866,7 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 		}
 	}
 
-	if (devc->profile->api_version == DS_API_V1)
+	if (devc->api_version == DS_API_V1)
 		cfg->trig_glb = (num_enabled_channels << 4);
 	else
 		cfg->trig_glb = ((num_enabled_channels & 0x1f) << 8);
@@ -878,7 +878,7 @@ static bool set_trigger(const struct sr_dev_inst *sdi, struct fpga_config_common
 static int fpga_config_size(const struct sr_dev_inst *sdi)
 {
 	const struct dev_context *const devc = sdi->priv;
-	if (devc->profile->api_version == DS_API_V1) {
+	if (devc->api_version == DS_API_V1) {
 		return sizeof(struct fpga_config_v1);
 	} else {
 		return sizeof(struct fpga_config_v2);
@@ -899,7 +899,7 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 
 	sr_dbg("Configuring FPGA.");
 
-	if (devc->profile->api_version == DS_API_V1) {
+	if (devc->api_version == DS_API_V1) {
 		struct fpga_config_v1 * v1_cfg;
 		cfg_buffer = g_malloc0(sizeof(struct fpga_config_v1));
 		v1_cfg = (struct fpga_config_v1 *)cfg_buffer;
@@ -933,13 +933,24 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 	WL16(&cfg->trig_glb_header, DS_CFG_TRIG_GLB);
 	WL16(&cfg->trig_header, DS_CFG_TRIG);
 
+	if ((devc->profile->dev_caps & DSLOGIC_CAPS_USB30) == 0) {
+		uint8_t cmd;
+		cmd = DS_WR_WORDWIDE;
+		ret = command_write(usb->devhdl, DSL_CTL_WORDWIDE, sizeof(uint8_t), &cmd);
+		if (ret != SR_OK) {
+			sr_err("Failed to set GPIF to be wordwide.");
+			g_free(cfg_buffer);
+			return ret;
+		}
+	}
+
 	/* Pass in the length of a fixed-size struct. Really. */
 	len = fpga_config_size(sdi) / 2;
 	c[0] = len & 0xff;
 	c[1] = (len >> 8) & 0xff;
 	c[2] = (len >> 16) & 0xff;
 
-	if (devc->profile->api_version == DS_API_V1) {
+	if (devc->api_version == DS_API_V1) {
 		ret = libusb_control_transfer(usb->devhdl, LIBUSB_REQUEST_TYPE_VENDOR |
 				LIBUSB_ENDPOINT_OUT, DS_CMD_SETTING, 0x0000, 0x0000,
 				c, sizeof(c), USB_TIMEOUT);
@@ -1033,7 +1044,7 @@ static int fpga_configure(const struct sr_dev_inst *sdi)
 		}
 	}
 
-	if (devc->profile->api_version == DS_API_V2) {
+	if (devc->api_version == DS_API_V2) {
 		/* assert INTRDY high to indicate data end) */
 		c[0] = DS_WR_INTRDY;
 		if (command_write(usb->devhdl, DSL_CTL_INTRDY, 1, c) != SR_OK) {
@@ -1062,12 +1073,12 @@ SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double 
 	struct dev_context *const devc = sdi->priv;
 	const struct sr_usb_dev_inst *const usb = sdi->conn;
 	/* The U3 series front end scales the threshold DAC differently. */
-	const uint8_t value = (devc->profile->api_version == DS_API_V2) ?
+	const uint8_t value = (devc->profile->dev_caps & DSLOGIC_CAPS_USB30) ?
 		(threshold / 3.3) * (1.5 / 2.5) * 255 : (threshold / 5.0) * 255;
 	const uint16_t cmd = value | (DS_ADDR_VTH << 8);
 
 	/* Send the control command. */
-	if (devc->profile->api_version == DS_API_V1) {
+	if (devc->api_version == DS_API_V1) {
 		ret = libusb_control_transfer(usb->devhdl,
 				LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT,
 				DS_CMD_WR_REG, 0x0000, 0x0000,
@@ -1085,6 +1096,15 @@ SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double 
 	devc->cur_threshold = threshold;
 
 	return SR_OK;
+}
+
+SR_PRIV enum dslogic_api_version dslogic_detect_api_version(libusb_device *usbdev)
+{
+	if (usb_match_manuf_prod(usbdev, "DreamSourceLab", "USB-based Instrument"))
+		return DS_API_V1;
+	if (usb_match_manuf_prod(usbdev, "DreamSourceLab", "USB-based DSL Instrument v2"))
+		return DS_API_V2;
+	return DS_API_V_UNKNOWN;
 }
 
 SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di)
@@ -1154,6 +1174,12 @@ SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di)
 			}
 		}
 
+		devc->api_version = dslogic_detect_api_version(devlist[i]);
+		if (devc->api_version == DS_API_V_UNKNOWN) {
+			sr_err("Failed to determine API version.");
+			break;
+		}
+
 		ret = command_get_fw_version(sdi, &vi);
 		if (ret != SR_OK) {
 			sr_err("Failed to get firmware version.");
@@ -1171,7 +1197,7 @@ SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di)
 		 * bail out if we encounter an incompatible version.
 		 * Different minor versions are OK, they should be compatible.
 		 */
-		req_major_version = (devc->profile->api_version == DS_API_V1) ?
+		req_major_version = (devc->api_version == DS_API_V1) ?
 									DSLOGIC_REQUIRED_VERSION_MAJOR_V1 : 
 									DSLOGIC_REQUIRED_VERSION_MAJOR_V2;
 		if (vi.major != req_major_version) {
@@ -1183,9 +1209,9 @@ SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di)
 		}
 
 		sr_info("Opened device on %d.%d (logical) / %s (physical), "
-			"interface %d, firmware %d.%d.",
+			"interface %d, firmware %d.%d, API version %d.",
 			usb->bus, usb->address, connection_id,
-			USB_INTERFACE, vi.major, vi.minor);
+			USB_INTERFACE, vi.major, vi.minor, devc->api_version);
 
 		sr_info("Detected REVID=%d, it's a Cypress CY7C68013%s.",
 			revid, (revid != 1) ? " (FX2)" : "A (FX2LP)");
@@ -1757,7 +1783,7 @@ static int check_samplerate(const struct sr_dev_inst *sdi)
 	const unsigned int channels = enabled_channel_count(sdi);
 	const struct rate_limit *limits;
 
-	if (devc->profile->api_version != DS_API_V2 || devc->external_clock)
+	if (!(devc->profile->dev_caps & DSLOGIC_CAPS_USB30) || devc->external_clock)
 		return SR_OK;
 
 	if (!devc->continuous_mode)

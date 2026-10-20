@@ -60,6 +60,7 @@
 #define DSLOGIC_U3PRO32_FPGA_FIRMWARE "dreamsourcelab-dslogic-u3pro32-fpga.fw"
 
 #define DSLOGIC_CAPS_ADF4360 (1 << 8)
+#define DSLOGIC_CAPS_USB30   (1 << 7)
 /* 32 logic channels; triggers on 16-31 go in a second config block. */
 #define DSLOGIC_CAPS_LA_CH32 (1 << 11)
 
@@ -82,8 +83,9 @@ enum dslogic_edge_modes {
 };
 
 enum dslogic_api_version {
-	DS_API_V1,
-	DS_API_V2
+	DS_API_V1 = 1,
+	DS_API_V2 = 2,
+	DS_API_V_UNKNOWN = 0xff
 };
 
 struct dslogic_version {
@@ -125,7 +127,6 @@ struct dslogic_profile {
 	uint64_t mem_depth;
 	uint32_t usb_buffer_duration_ms;
 	uint32_t block_size;
-	enum dslogic_api_version api_version;
 	uint64_t max_samplerate;
 	uint64_t half_samplerate;
     uint64_t quarter_samplerate;
@@ -134,6 +135,7 @@ struct dslogic_profile {
 
 struct dev_context {
 	const struct dslogic_profile *profile;
+	enum dslogic_api_version api_version;
 	/*
 	 * Since we can't keep track of a DSLogic device after upgrading
 	 * the firmware (it renumerates into a different device address
@@ -181,6 +183,7 @@ struct dev_context {
 SR_PRIV unsigned int dslogic_num_channels(const struct dslogic_profile *prof);
 SR_PRIV int dslogic_fpga_firmware_upload(const struct sr_dev_inst *sdi);
 SR_PRIV int dslogic_set_voltage_threshold(const struct sr_dev_inst *sdi, double threshold);
+SR_PRIV enum dslogic_api_version dslogic_detect_api_version(libusb_device *usbdev);
 SR_PRIV int dslogic_dev_open(struct sr_dev_inst *sdi, struct sr_dev_driver *di);
 SR_PRIV struct dev_context *dslogic_dev_new(void);
 SR_PRIV int dslogic_acquisition_start(const struct sr_dev_inst *sdi);
