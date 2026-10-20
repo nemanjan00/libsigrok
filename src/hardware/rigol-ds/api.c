@@ -331,6 +331,11 @@ static const struct rigol_ds_model supported_models[] = {
 	{SERIES(MHO900), "MHO98", {200, 1000000000000}, CH_INFO(4, true), std_cmd},
 };
 
+/* IDN vendor string, vendor it stands for */
+static const char *vendor_aliases[][2] = {
+	{ "NK Technologies", "Rigol Technologies" },
+};
+
 static struct sr_dev_driver rigol_ds_driver_info;
 
 static int analog_frame_size(const struct sr_dev_inst *);
@@ -371,6 +376,15 @@ static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi)
 		if (sr_scpi_get_hw_id(scpi, &hw_info) != SR_OK) {
 			sr_info("Couldn't get IDN response.");
 			return NULL;
+		}
+	}
+
+	/* Rebadged units report another vendor; treat them as Rigol. */
+	for (i = 0; i < ARRAY_SIZE(vendor_aliases); i++) {
+		if (!g_ascii_strcasecmp(hw_info->manufacturer, vendor_aliases[i][0])) {
+			g_free(hw_info->manufacturer);
+			hw_info->manufacturer = g_strdup(vendor_aliases[i][1]);
+			break;
 		}
 	}
 
