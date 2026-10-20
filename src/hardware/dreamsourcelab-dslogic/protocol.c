@@ -1363,10 +1363,12 @@ static void * session_worker_thread(void *data) {
 	const unsigned int usize = unitsize(devc);
 	uint64_t num_samples;
 	uint64_t limit_samples;
-	gboolean abort = FALSE;
 	struct finished_transfer *finished_transfer;
 	unsigned int cur_sample_count;
 	int trigger_offset;
+	const size_t block_bytes = DSLOGIC_ATOMIC_BYTES * channel_count;
+	uint8_t *buf;
+	size_t length;
 
 	while (TRUE) {
 		g_mutex_lock(&devc->data_proc_mutex);
@@ -1391,8 +1393,22 @@ static void * session_worker_thread(void *data) {
 		if (!devc->continuous_mode)
 				limit_samples = devc->samples_captured;
 		
-		cur_sample_count = DSLOGIC_ATOMIC_SAMPLES * finished_transfer->length /
-					(DSLOGIC_ATOMIC_BYTES * channel_count);
+		/*
+		 * A transfer that ended early (e.g. timed out, as with an
+		 * external clock slower than the samplerate) can stop in the
+		 * middle of a block. Carry that block over to the next transfer
+		 * so the stream stays aligned to the channel round-robin.
+		 */
+		length = devc->partial_len + finished_transfer->length;
+		buf = g_malloc(length);
+		memcpy(buf, devc->partial_block, devc->partial_len);
+		memcpy(buf + devc->partial_len, finished_transfer->buffer,
+			finished_transfer->length);
+		devc->partial_len = length % block_bytes;
+		length -= devc->partial_len;
+		memcpy(devc->partial_block, buf + length, devc->partial_len);
+
+		cur_sample_count = DSLOGIC_ATOMIC_SAMPLES * length / block_bytes;
 		if (!limit_samples || devc->sent_samples < limit_samples) {
 			if (limit_samples && 
 				devc->sent_samples + cur_sample_count > limit_samples)
@@ -1411,16 +1427,10 @@ static void * session_worker_thread(void *data) {
 			 *
 			 * Hopefully in future it will be possible to pass the data on as-is.
 			 */
-			if ((finished_transfer->length % 
-				(DSLOGIC_ATOMIC_BYTES * channel_count) != 0)) {
-				sr_err("Invalid transfer length!");
-				/* we need to abort here since we are now misaligned with the
-				received data stream which in worst case could lead to a
-				channel swap */
-				abort = TRUE;
+			if (length == 0) {
+				/* Only part of a block so far. */
 			} else {
-				deinterleave_buffer(finished_transfer->buffer,
-					finished_transfer->length,
+				deinterleave_buffer(buf, length,
 					devc->deinterleave_buffer, channel_count, channel_mask,
 					dslogic_num_channels(devc->profile), usize);
 
@@ -1446,11 +1456,12 @@ static void * session_worker_thread(void *data) {
 				}
 			}
 		}
+		g_free(buf);
 		g_free(finished_transfer->buffer);
 		g_free(finished_transfer);
 		g_mutex_lock(&devc->data_proc_mutex);
 		if (devc->data_proc_state == DS_DATA_PROC_RUNNING) {
-			if (abort || (limit_samples && devc->sent_samples >= limit_samples)) {
+			if (limit_samples && devc->sent_samples >= limit_samples) {
 				devc->data_proc_state = DS_DATA_PROC_MAX_SAMPLES_REACHED;
 			}
 		}
@@ -1641,8 +1652,10 @@ static int start_transfers(const struct sr_dev_inst *sdi)
 		return SR_ERR_MALLOC;
 	}
 
+	/* One block more than a transfer, for a block carried over. */
 	devc->deinterleave_buffer = g_try_malloc(DSLOGIC_ATOMIC_SAMPLES *
-		(size / (channel_count * DSLOGIC_ATOMIC_BYTES)) * unitsize(devc));
+		(size / (channel_count * DSLOGIC_ATOMIC_BYTES) + 1) * unitsize(devc));
+	devc->partial_len = 0;
 	if (!devc->deinterleave_buffer) {
 		sr_err("Deinterleave buffer malloc failed.");
 		g_free(devc->deinterleave_buffer);
