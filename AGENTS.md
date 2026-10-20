@@ -181,7 +181,7 @@ Built from DSView's `libsigrok4DSL/hardware/DSL/` (`dsl.h`, `dsl.c`).
 - External trigger in/out (the `I`/`O` pins) isn't exposed by this driver.
 
 Verified on hardware (2026-10-20) with a Glasgow revC3 as the signal
-source: channel mapping on 0-8 and 28-31, a 6 MHz clock measured in every
+source: channel mapping on 0-2, 4-8 and 28-31, a 6 MHz clock measured in every
 mode above, triggers on low and high channels (incl. pre-trigger at
 10/50/90 %), external clock on the `C` pin, 30 ch @ 100 MHz streamed for
 2 s without loss, and the threshold at 1.8 V. The U3Pro16 path was not
