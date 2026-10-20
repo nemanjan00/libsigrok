@@ -22,45 +22,93 @@
 #include <math.h>
 #include "protocol.h"
 
+static const uint64_t samplerates_U3Pro16[] = {
+	SR_KHZ(10),
+	SR_KHZ(20),
+	SR_KHZ(50),
+	SR_KHZ(100),
+	SR_KHZ(200),
+	SR_KHZ(500),
+	SR_MHZ(1),
+	SR_MHZ(2),
+	SR_MHZ(5),
+	SR_MHZ(10),
+	SR_MHZ(20),
+	SR_MHZ(25),
+	SR_MHZ(50),
+	SR_MHZ(100),
+	SR_MHZ(125),
+	SR_MHZ(250),
+	SR_MHZ(500),
+	SR_MHZ(1000),
+};
+
+/* Channel count vs. samplerate limits of the U3 series (from DSView). */
+static const struct dslogic_rate_limit u3_buffer_limits[] = {
+	{ 8, SR_GHZ(1) }, { 16, SR_MHZ(500) }, { 32, SR_MHZ(250) }, { 0, 0 },
+};
+static const struct dslogic_rate_limit u3pro16_stream_limits_usb3[] = {
+	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
+	{ 16, SR_MHZ(125) }, { 0, 0 },
+};
+static const struct dslogic_rate_limit u3pro32_stream_limits_usb3[] = {
+	{ 3, SR_GHZ(1) }, { 6, SR_MHZ(500) }, { 12, SR_MHZ(250) },
+	{ 30, SR_MHZ(100) }, { 32, SR_MHZ(50) }, { 0, 0 },
+};
+static const struct dslogic_rate_limit u3_stream_limits_usb2[] = {
+	{ 3, SR_MHZ(100) }, { 6, SR_MHZ(50) }, { 12, SR_MHZ(25) },
+	{ 16, SR_MHZ(20) }, { 32, SR_MHZ(10) }, { 0, 0 },
+};
+
+static const struct dslogic_hw u3pro16_hw = {
+	ARRAY_AND_SIZE(samplerates_U3Pro16), DS_VTH_SCALE_U3,
+	u3_buffer_limits, u3pro16_stream_limits_usb3, u3_stream_limits_usb2,
+};
+
+static const struct dslogic_hw u3pro32_hw = {
+	ARRAY_AND_SIZE(samplerates_U3Pro16), DS_VTH_SCALE_U3,
+	u3_buffer_limits, u3pro32_stream_limits_usb3, u3_stream_limits_usb2,
+};
+
 static const struct dslogic_profile supported_device[] = {
 	/* DreamSourceLab DSLogic */
 	{ 0x2a0e, 0x0001, "DreamSourceLab", "DSLogic", NULL,
 		"dreamsourcelab-dslogic-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024 * 1024, 100,
-		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1, NULL},
 	/* DreamSourceLab DSCope */
 	{ 0x2a0e, 0x0002, "DreamSourceLab", "DSCope", NULL,
 		"dreamsourcelab-dscope-fx2.fw",
 		0, "DreamSourceLab", "DSCope", 256 * 1024 * 1024, 100,
-		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1, NULL},
 	/* DreamSourceLab DSLogic Pro */
 	{ 0x2a0e, 0x0003, "DreamSourceLab", "DSLogic Pro", NULL,
 		"dreamsourcelab-dslogic-pro-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024 * 1024, 100,
-		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1, NULL},
 	/* DreamSourceLab DSLogic Plus */
 	{ 0x2a0e, 0x0020, "DreamSourceLab", "DSLogic Plus", NULL,
 		"dreamsourcelab-dslogic-plus-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024 * 1024, 100,
-		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1, NULL},
 	/* DreamSourceLab DSLogic Basic */
 	{ 0x2a0e, 0x0021, "DreamSourceLab", "DSLogic Basic", NULL,
 		"dreamsourcelab-dslogic-basic-fx2.fw",
 		0, "DreamSourceLab", "DSLogic", 256 * 1024, 100,
-		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1},
+		512, SR_MHZ(100), SR_MHZ(200), SR_MHZ(400), 1, NULL},
 	/* DreamSourceLab DSLogic U3Pro16 */
 	{ 0x2a0e, 0x002a, "DreamSourceLab", "DSLogic U3Pro16", NULL,
 		"dreamsourcelab-dslogic-basic-fx2.fw",
 		DSLOGIC_CAPS_ADF4360 | DSLOGIC_CAPS_USB30, "DreamSourceLab", "DSLogic", 
 		2ULL * 1024ULL * 1024ULL * 1024ULL, 40,
-		1024, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5},
+		1024, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5, &u3pro16_hw},
 	/* DreamSourceLab DSLogic U3Pro32 */
 	{ 0x2a0e, 0x002c, "DreamSourceLab", "DSLogic U3Pro32", NULL,
 		"dreamsourcelab-dslogic-basic-fx2.fw",
 		DSLOGIC_CAPS_ADF4360 | DSLOGIC_CAPS_USB30 | DSLOGIC_CAPS_LA_CH32,
 		"DreamSourceLab", "DSLogic",
 		2ULL * 1024ULL * 1024ULL * 1024ULL, 40,
-		1024, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5},
+		1024, SR_MHZ(500), SR_MHZ(500), SR_GHZ(1), 5, &u3pro32_hw},
 
 	ALL_ZERO
 };
@@ -122,26 +170,6 @@ static const uint64_t samplerates[] = {
 	SR_MHZ(400),
 };
 
-static const uint64_t samplerates_U3Pro16[] = {
-	SR_KHZ(10),
-	SR_KHZ(20),
-	SR_KHZ(50),
-	SR_KHZ(100),
-	SR_KHZ(200),
-	SR_KHZ(500),
-	SR_MHZ(1),
-	SR_MHZ(2),
-	SR_MHZ(5),
-	SR_MHZ(10),
-	SR_MHZ(20),
-	SR_MHZ(25),
-	SR_MHZ(50),
-	SR_MHZ(100),
-	SR_MHZ(125),
-	SR_MHZ(250),
-	SR_MHZ(500),
-	SR_MHZ(1000),
-};
 
 static gboolean is_plausible(const struct libusb_device_descriptor *des)
 {
@@ -292,9 +320,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->priv = devc;
 		devices = g_slist_append(devices, sdi);
 
-		if (devc->profile->dev_caps & DSLOGIC_CAPS_USB30) {
-			devc->samplerates = samplerates_U3Pro16;
-			devc->num_samplerates = ARRAY_SIZE(samplerates_U3Pro16);
+		if (devc->profile->hw) {
+			devc->samplerates = devc->profile->hw->samplerates;
+			devc->num_samplerates = devc->profile->hw->num_samplerates;
 		} else {
 			devc->samplerates = samplerates;
 			devc->num_samplerates = ARRAY_SIZE(samplerates);
