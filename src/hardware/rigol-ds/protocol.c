@@ -468,6 +468,33 @@ SR_PRIV int rigol_ds_capture_start(const struct sr_dev_inst *sdi)
 }
 
 /* Start reading data from the current channel */
+/* Check that the scope switched the waveform source to @p ch. */
+static int rigol_ds_check_source(const struct sr_dev_inst *sdi,
+		const struct sr_channel *ch)
+{
+	char *source = NULL, *want;
+	int ret;
+
+	if (ch->type == SR_CHANNEL_ANALOG)
+		want = g_strdup_printf("CHAN%d", ch->index + 1);
+	else
+		want = g_strdup_printf("D%d", ch->index);
+
+	ret = sr_scpi_get_string(sdi->conn, ":WAV:SOUR?", &source);
+	if (ret == SR_OK && g_ascii_strcasecmp(source, want)) {
+		if (ch->type == SR_CHANNEL_LOGIC)
+			sr_err("Scope refused source %s (logic probe connected?).",
+				want);
+		else
+			sr_err("Scope refused source %s.", want);
+		ret = SR_ERR;
+	}
+	g_free(source);
+	g_free(want);
+
+	return ret;
+}
+
 SR_PRIV int rigol_ds_channel_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
@@ -523,6 +550,14 @@ SR_PRIV int rigol_ds_channel_start(const struct sr_dev_inst *sdi)
 					ch->index) != SR_OK)
 				return SR_ERR;
 		}
+		/*
+		 * DHO/MHO config writes skip *OPC?, so a source the scope
+		 * refuses (a hidden channel, or D0-D15 without the logic
+		 * probe) would go unnoticed and the previous source be read.
+		 */
+		if (devc->model->series->protocol == PROTOCOL_V6 &&
+				rigol_ds_check_source(sdi, ch) != SR_OK)
+			return SR_ERR;
 
 		if (first_frame && rigol_ds_config_set(sdi,
 					devc->data_source == DATA_SOURCE_LIVE ?
