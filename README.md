@@ -45,6 +45,19 @@ Per-driver details (protocol notes, rate limits, known issues, exactly what was
 tested) are in [`AGENTS.md`](AGENTS.md). Notes on drivers that came from
 upstream are in [`README.devices`](README.devices).
 
+## Installing
+
+On Arch Linux, the fork is on the AUR as
+[`libsigrok-nemanjan00-git`](https://aur.archlinux.org/packages/libsigrok-nemanjan00-git).
+It builds this repo's `master` and replaces `libsigrok`/`libsigrok-git`, so
+PulseView and sigrok-cli pick it up:
+
+```sh
+yay -S libsigrok-nemanjan00-git
+```
+
+It installs the udev rules too. For anything else, build from source.
+
 ## Building
 
 ```sh
