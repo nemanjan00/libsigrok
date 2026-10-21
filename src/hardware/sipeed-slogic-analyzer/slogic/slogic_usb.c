@@ -1143,9 +1143,17 @@ int slogic_capture_poll(slogic_capture *c, unsigned max_buffers, unsigned wait_m
 			__atomic_store_n(&c->reason, "short", __ATOMIC_RELEASE);
 		}
 		build_report(c, &rep);
-		if (rep.fit_n >= 3 && rep.mbps > 0 && rep.mbps < 0.9 * rep.exp_mbps)
+		/*
+		 * The analyzer streams with no deep buffer and no overflow flag:
+		 * when the host takes less than it produces, samples are lost and
+		 * the stream simply continues. A healthy link fits within about
+		 * 1% of the expected rate (measured on an SLogic16U3 at 400 MB/s);
+		 * a hub chain that managed 98% lost samples.
+		 */
+		if (rep.fit_n >= 3 && rep.mbps > 0 && rep.mbps < 0.985 * rep.exp_mbps)
 			dlog(c->d, SLOGIC_LOG_WARN, "USB link slower than the analyzer "
-			     "(%.1f of %.1f MB/s); drained at the host's pace.",
+			     "(%.1f of %.1f MB/s): samples were probably lost. Use a "
+			     "lower samplerate, fewer channels or a direct USB port.",
 			     rep.mbps, rep.exp_mbps);
 		slogic_report_format(&rep, line, sizeof(line));
 		dlog(c->d, c->end == SLOGIC_END_ERROR ? SLOGIC_LOG_ERR : SLOGIC_LOG_INFO,
