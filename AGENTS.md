@@ -19,6 +19,7 @@ comes in as a merge, so each source can be followed in `git log --graph`.
 | nemanjan00 (`0e6ef292`) | fork only: `NK Technologies` IDN accepted as Rigol (the lab's MHO98) | own commit |
 | branch `dslogic-u3pro32` | DSLogic U3Pro32 support (32 channels, `2a0e:002c`), U3 threshold fix, samplerate/channel check, U3 udev rules | merged |
 | [sipeed/libsigrok](https://github.com/sipeed/libsigrok/tree/slogic-dev) `slogic-dev` ([PR #275](https://github.com/sigrokproject/libsigrok/pull/275)) | Sipeed SLogic analyzers (16U3, 32U3, Combo 8) on the shared `libslogic` core, udev rules, `std_i32_idx()` | merged |
+| branch `sipeed-slogic-fixes` | libslogic: warn about lost samples when the USB link falls short | merged |
 | branch `saleae-logic-pro8` (`614918c6`) | Saleae Logic Pro 8 support with the current (Logic 2) protocol, firmware and bitstream | merged |
 
 ## Remotes
@@ -96,7 +97,8 @@ can be sent upstream as is. `master` is only where the branches are combined.
 - To refresh a topic branch for upstreaming, rebase it on the latest
   `origin/master` (topic branches may be force-pushed; `master` never).
 - Current topic branches: `saleae-logic-pro8` (Saleae Logic Pro 8) and
-  `dslogic-u3pro32` (DSLogic U3Pro32) and `rigol-mho900` (Rigol MHO98).
+  `dslogic-u3pro32` (DSLogic U3Pro32), `rigol-mho900` (Rigol MHO98) and
+  `sipeed-slogic-fixes` (on top of `sipeed/slogic-dev`).
   The SLogic work and the rest of the
   DSLogic work are maintained upstream-style in their own repos
   (`christian/*`, `sipeed/slogic-dev`) and are merged from there.
@@ -263,6 +265,28 @@ multi-frame) and memory captures of 10 kpts and 1 Mpts with the right
 amplitude, frequency and samplerate; timebase, vdiv, coupling, probe
 factor and trigger get/set. Digital channels are untested (no logic
 probe); segmented mode is untested.
+
+## Sipeed SLogic16 U3 (`sipeed-slogic-analyzer`)
+
+`359f:3031`, USB 3, streams only (no hardware buffer to speak of). Rates:
+16 ch up to 200 MHz, 8 ch 400 MHz, 4 ch 800 MHz, all 3.2 Gbit/s (set the
+channel count with `logic_channels`). `continuous` without get/set in the
+option list is sigrok's "supports continuous capture" flag, not a setting.
+
+- **It needs a USB 3 link that really delivers 400 MB/s** at the top rate of
+  each mode. A direct port did (398-403 MB/s); a Thunderbolt dock with a
+  hub chain managed 390-392 MB/s and the analyzer silently dropped
+  samples. The protocol has no overflow flag; the driver now warns when
+  the fitted rate is below 98.5% of the expected one.
+- **Even on a direct port, at 160 MHz and up with 16 channels, a short gap
+  (a few thousand samples) can occur** about once per 100-200 Msamples.
+  It can't be detected on the host. 16 ch @ 100 MHz had none in 200 Msamples.
+- Once, the first capture after plugging in ran at 160 MHz instead of the
+  requested 50 MHz with scrambled channels. Not reproducible since.
+
+Verified (2026-10-21, firmware 202512191855, la-bench on all 16 channels):
+exact samplerates 5-200 MHz, gray pattern at 24 MHz sample-exact in all
+modes below the top rate, top rates sustained on a direct port.
 
 ## Testing gotchas (lab PC)
 

@@ -28,7 +28,7 @@ replacement and PulseView and sigrok-cli work with it unchanged.
 | DreamSourceLab DSLogic U3Pro32 | `dreamsourcelab-dslogic` | Tested: all 32 channels, buffered and continuous mode, triggers on every channel, external clock | this fork |
 | DreamSourceLab DSLogic U3Pro16 | `dreamsourcelab-dslogic` | Supported, not re-tested here | [christianeisendle](https://github.com/christianeisendle/libsigrok), with this fork's fixes |
 | Saleae Logic Pro 8 (current hardware) | `saleae-logic-pro` | Tested: digital up to 500 MS/s, analog, triggers | this fork, Logic 2 protocol |
-| Sipeed SLogic Combo 8, 16U3, 32U3 | `sipeed-slogic-analyzer` | Combo 8 tested | [Sipeed](https://github.com/sipeed/libsigrok/tree/slogic-dev) |
+| Sipeed SLogic Combo 8, 16U3, 32U3 | `sipeed-slogic-analyzer` | Combo 8 and 16U3 tested (16U3: all modes up to 16 ch @ 200 MHz on a direct USB 3 port) | [Sipeed](https://github.com/sipeed/libsigrok/tree/slogic-dev) + a fix from this fork |
 | Rigol MHO98 (MHO900 series) | `rigol-ds` | Tested over LAN: analog channels, live and memory captures, settings | this fork |
 | Rigol DHO800/900/1000/4000 | `rigol-ds` | Supported, tested by others | [upstream PR #246](https://github.com/sigrokproject/libsigrok/pull/246) |
 
